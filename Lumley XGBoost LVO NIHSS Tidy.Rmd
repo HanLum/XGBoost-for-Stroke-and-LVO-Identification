@@ -1,0 +1,3677 @@
+---
+title: "Lumley XGBoost LVO NIHSS"
+author: "Hannah Lumley"
+date: "9 February 2024"
+output:
+  html_document:
+    theme: journal
+  pdf_document: default
+---
+
+##### Install Packages #####
+```{r}
+
+install.packages(c("vip", 
+                   "xgboost",
+                 "tidymodels",
+                 "cowplot", 
+                 "groupdata2",
+                 "ConfusionTableR",
+                 "SHAPforxgboost",
+                 "shapviz",
+                 "weights",
+                 "pROC",
+                 "precrec",
+                 "MLmetrics",
+                 "plotly",
+                 "ICEbox",
+                 "janitor", 
+                 "DiagrammeR",
+                 "DiagrammeRsvg",
+                 "rsvg", 
+                 "EIX", 
+                 "mlr3verse",
+                 "compareDF",
+                 "gt",
+                 "renv",
+                 "gtsummary",
+                 "gt",
+                 "readxl",
+                 "plyr",
+                 "tidyr",
+                 "tidyverse",
+                 "scales",
+                 "markdown",
+                 "colorspace",
+                 "ggrepel",
+                 "ggpubr",
+                 "ggplot2",
+                 "tidyr",
+                 "data.table",
+                 "xml2"))
+
+```
+
+##### Load packages #####
+```{r}
+library("vip")
+library("xgboost")
+library("tidymodels")
+library("cowplot")
+library("groupdata2")
+library("ConfusionTableR")
+library("SHAPforxgboost")
+library("shapviz")
+library("weights")
+library("pROC")
+library("precrec")
+library("MLmetrics")
+library("plotly")
+library("ICEbox")
+library("janitor") 
+library("DiagrammeR")
+library("DiagrammeRsvg")
+library("rsvg")
+library("EIX")
+library("mlr3verse")
+library("compareDF")
+library("gt")
+library("renv")
+library("gtsummary")
+library("readxl")
+library("plyr")
+library("tidyr")
+library("tidyverse")
+library("scales")
+library("markdown")
+library("colorspace")
+library("ggrepel")
+library("ggpubr")
+library("ggplot2")
+library("tidyr")
+library("data.table")
+library("xml2")
+```
+
+###### Read in data, transform variables, bind and shuffle datasets #####
+```{r}
+
+#set working directory: setwd("~/Documents")
+
+install.packages("excel.link")
+library("excel.link")
+
+#setwd("~X:/STROKE-StroBE/StroBE and ABACUS data for Hannah/")
+StroBE=xl.read.file("X:/STROKE-StroBE/StroBE and ABACUS data for Hannah/StroBE-LVO_excel_export_20240508101457LScatandeligibility.xlsx", xl.sheet="Study results", password = rstudioapi::askForPassword("Input password for excel sheet."))
+
+#Diagnosis
+StroBE$Diagnosis=as.numeric(mapvalues(StroBE$"Lisa LVO / non-LVO", c("LVO", "non-LVO", "exclude - can't assign as LVO or non-LVO"), c(1, 2, 0)))
+
+StroBE=filter(StroBE, A_10ConYN=="Yes", Diagnosis!=0, B_1PatTranspAmb=="Yes")
+StroBE$Diagnosis=mapvalues(StroBE$Diagnosis, c(1, 2), c(1, 0))
+
+#Demographics 
+StroBE$"Age_in_Years"=as.numeric(StroBE$B_4Age)
+StroBE$"Gender"=as.numeric(mapvalues(StroBE$B_5Gender, c("Male", "Female"), c(1, 2)))
+
+#Past Medical History
+StroBE$"History_of_Stroke"=as.numeric(mapvalues(StroBE$C_11PrevStroke, c("Yes", "No", "Unknown"), c(1, 0, 0)))
+StroBE$"History_of_TIA"=as.numeric(mapvalues(StroBE$D_12TIA, c("Yes", "No", "Unknown"), c(1, 0, 0)))
+StroBE$"History_of_Diabetes"=as.numeric(mapvalues(StroBE$D_12Diabetes, c("Yes", "No", "Unknown"), c(1, 0, 0)))
+StroBE$"History_of_Hypertension"=as.numeric(mapvalues(StroBE$D_12Hypertension, c("Yes", "No", "Unknown"), c(1, 0, 0)))
+StroBE$"Pre_Stroke_Disability_mRS"=as.numeric(mapvalues(StroBE$D_16PreAdmisRankin, c("No symptoms at all", 
+                                                                                       "No significant disability despite symptoms: able to carry out all usual duties and activities", 
+                                                                                       "Slight disability: unable to carry out all previous activities but able to look after own affairs without assistance",
+                                                                                       "Moderate disability: requiring some help, but able to walk without assistance",
+                                                                                       "Moderately severe disability: unable to walk without assistance, and unable to attend to own bodily needs without assistance",
+                                                                                     "Severe disability: bedridden, incontinent and requiring constant nursing care and attention"),
+                                                          c(0, 1, 2, 3, 4, 5)))
+StroBE$Pre_Stroke_Disability_mRS_3_to_5=ifelse(StroBE$Pre_Stroke_Disability_mRS>2, 1, 0)
+
+StroBE$History_or_Presence_of_Atrial_Fibrillation=ifelse(StroBE$D_12AtrialFib=="Yes" & StroBE$B_6AtrialFib=="Yes", "Yes", "No")
+StroBE$History_or_Presence_of_Atrial_Fibrillation=as.numeric(mapvalues(StroBE$History_or_Presence_of_Atrial_Fibrillation, c("Yes", "No"), c(1, 0)))
+
+#Physiological Observations
+StroBE$Capillary_Blood_Glucose_mmol_L=as.numeric(mapvalues(StroBE$B_6Glucose, c("-95", "-98", "-99"), c(" ", " ", " ")))
+StroBE$Systolic_Blood_Pressure_mmHg=as.numeric(mapvalues(StroBE$B_6PBS, c("-95", "-98", "-99"), c(" ", " ", " ")))
+StroBE$Diastolic_Blood_Pressure_mmHg=as.numeric(mapvalues(StroBE$B_6PBD, c("-95", "-98", "-99"), c(" ", " ", " ")))
+StroBE$Heart_Rate_BPM=as.numeric(mapvalues(StroBE$B_6HR, c("-95", "-98", "-99"), c(" ", " ", " ")))
+StroBE$Temperature_Degrees_C=as.numeric(mapvalues(StroBE$B_6Temp, c("-95", "-98", "-99"), c(" ", " ", " ")))
+StroBE$Peripheral_Oxygen_Saturation_Percent=as.numeric(mapvalues(StroBE$B_6O2Sat, c("-95", "-98", "-99"), c(" ", " ", " ")))
+StroBE$Consciousness_AVPU_max_3=as.numeric(mapvalues(StroBE$B_2FirstAVPU, c("A – Awake/alert", "V – Responds to verbal stimulation", "P – Responds to painful stimulation", "U - Unresponsive"), c(0, 1, 2, 3)))
+
+#Symptoms
+StroBE$FAST_Facial_Weakness=as.numeric(mapvalues(StroBE$B_1AmbSymptomFace, c("Yes", "No"), c(1, 0)))
+StroBE$FAST_Arm_Weakness=as.numeric(mapvalues(StroBE$B_1AmbSymptomArm, c("Yes", "No"), c(1, 0)))
+StroBE$FAST_Speech_Disturbance=as.numeric(mapvalues(StroBE$B_1AmbSymptomSpeech, c("Yes", "No"), c(1, 0)))
+
+StroBE$FAST_Positive=ifelse(rowSums(StroBE[,c("FAST_Facial_Weakness", "FAST_Arm_Weakness", "FAST_Speech_Disturbance")])>0, 1, 0)
+
+#NIHSS symptoms binarised
+StroBE$NIHSS_Unconsciousness=as.numeric(mapvalues(StroBE$C_8_1aConsciousness, c("Alert", "Not alert, but arousable with minimal stimulation", 
+"Not alert, requires repeated stimulation to attend", "Coma"), c(0,1,2,3))) #or 0,1,2
+StroBE$NIHSS_LOC_Questions=as.numeric(mapvalues(StroBE$C_8_1bQuestions, c("Answers both correctly", "Answers one correctly", "Both incorrect"), c(0, 1, 2))) #or 0,1,2
+StroBE$NIHSS_LOC_Commands=as.numeric(mapvalues(StroBE$C_8_1cCommands, c("Obeys both correctly", "Obeys one correctly", "Both incorrect"), c(0, 1, 2))) #or 0,1,2
+StroBE$NIHSS_Gaze_Deviation=as.numeric(mapvalues(StroBE$C_8_2BestGaze, c("Normal", "Partial gaze palsy", "Forced gaze palsy"), c(0, 1, 2))) #or 0,1,2
+StroBE$NIHSS_Hemianopia=as.numeric(mapvalues(StroBE$C_8_3VisualField, c("No visual field loss", "Partial hemianopia", "Complete hemianopia"), c(0, 1, 2))) #or 0,1,2
+StroBE$NIHSS_Facial_Palsy=as.numeric(mapvalues(StroBE$C_8_4FacialPalsy, c("Normal symmetrical movement", "Minor paralysis (flattened nasolabial fold, asymmetry on smiling)",
+                                                                          "Partial paralysis (total or near total paralysis of lower face)", 
+                                                                          "Complete paralysis of one or both sides (absence of facial movement in the upper and lower face)"), c(0, 1, 1, 1))) #or 0,1,2
+StroBE$NIHSS_LArm_Drift=as.numeric(mapvalues(StroBE$C_8_5ArmL, c("Normal (extends arm 90o or 45o for 10 sec without drift)", "Drift","Some effort against gravity", "No effort against gravity",
+                                               "No movement", "Untestable (e.g. amputated)"), c(0, 1, 2, 3, 4, 0)))
+StroBE$NIHSS_RArm_Drift=as.numeric(mapvalues(StroBE$C_8_5ArmR, c("Normal (extends arm 90o or 45o for 10 sec without drift)", "Drift","Some effort against gravity", "No effort against gravity",
+                                                                 "No movement", "Untestable (e.g. amputated)"), c(0, 1, 2, 3, 4, 0)))
+StroBE$NIHSS_Arm_Drift=ifelse(StroBE$NIHSS_RArm_Drift>0 | StroBE$NIHSS_LArm_Drift>0, 1, 0)
+StroBE$NIHSS_Arm_Weakness=StroBE$NIHSS_Arm_Drift
+StroBE$NIHSS_Arm_DriftD=as.numeric(ifelse(StroBE$NIHSS_RArm_Drift==1 | StroBE$NIHSS_LArm_Drift==1, 1, 
+                               ifelse(StroBE$NIHSS_RArm_Drift==2 | StroBE$NIHSS_LArm_Drift==2, 2, 
+                                      ifelse(StroBE$NIHSS_RArm_Drift==3 | StroBE$NIHSS_LArm_Drift==3, 3, 
+                                             ifelse(StroBE$NIHSS_RArm_Drift==4 | StroBE$NIHSS_LArm_Drift==4, 4, 
+                                                    ifelse(StroBE$NIHSS_RArm_Drift==0 | StroBE$NIHSS_LArm_Drift==0, 0,  ""))))))
+
+StroBE$NIHSS_LLeg_Drift=as.numeric(mapvalues(StroBE$C_8_6LegL, c("Normal (holds leg in 30o position for 5 sec without drift)", "Drift","Some effort against gravity", "No effort against gravity",
+                                                                 "No movement", "Untestable (e.g. amputated)"), c(0, 1, 2, 3, 4, 0)))
+StroBE$NIHSS_RLeg_Drift=as.numeric(mapvalues(StroBE$C_8_6LegR, c("Normal (holds leg in 30o position for 5 sec without drift)", "Drift","Some effort against gravity", "No effort against gravity",
+                                                                 "No movement", "Untestable (e.g. amputated)"), c(0, 1, 2, 3, 4, 0)))
+StroBE$NIHSS_Leg_Drift=ifelse(StroBE$NIHSS_RLeg_Drift>0 | StroBE$NIHSS_LLeg_Drift>0, 1, 0)
+StroBE$NIHSS_Leg_DriftD=as.numeric(ifelse(StroBE$NIHSS_RLeg_Drift==1 | StroBE$NIHSS_LLeg_Drift==1, 1, 
+                               ifelse(StroBE$NIHSS_RLeg_Drift==2 | StroBE$NIHSS_LLeg_Drift==2, 2, 
+                                      ifelse(StroBE$NIHSS_RLeg_Drift==3 | StroBE$NIHSS_LLeg_Drift==3, 3, 
+                                             ifelse(StroBE$NIHSS_RLeg_Drift==4 | StroBE$NIHSS_LLeg_Drift==4, 4, 
+                                                    ifelse(StroBE$NIHSS_RLeg_Drift==0 | StroBE$NIHSS_LLeg_Drift==0, 0,  ""))))))
+
+StroBE$NIHSS_Ataxia=as.numeric(mapvalues(StroBE$C_8_7LimbAtaxia, c("No ataxia", "Present in one limb", "Present in two limbs"), c(0, 1, 2))) #or 0,1,2
+StroBE$NIHSS_Loss_of_Sensation=as.numeric(mapvalues(StroBE$C_8_8Sensory, c("Normal", "Mild to moderate decrease in sensation", "Severe to total sensory loss"), c(0, 1, 1))) #or 0,1,2
+
+
+StroBE$NIHSS_Aphasia=as.numeric(mapvalues(StroBE$C_8_9BestLanguage, c("No aphasia", "Mild to moderate aphasia", "Severe aphasia", "Mute"), c(0, 1, 2, 0))) #or 0,1,2
+StroBE$NIHSS_Dysarthria=as.numeric(mapvalues(StroBE$C_8_10Dysarthria, c("Normal articulation", "Mild to moderate slurring of words", "Near unintelligible or unable to speak", "Intubated or other physical barrier"), c(0, 1, 2, 0))) #or 0,1,2
+StroBE$NIHSS_Speech_Disturbance=ifelse(StroBE$NIHSS_Aphasia>0 | StroBE$NIHSS_Dysarthria>0, 1, 0)
+
+StroBE$NIHSS_Inattention_or_Extinction=as.numeric(mapvalues(StroBE$C_8_11Extinction, c("Normal", "Inattention or extinction to bilateral simultaneous stimulation in one of the sensory modalities", "Severe hemi-inattention or hemi-inattention to more than one modality"), c(0, 1, 2))) #or 0,1,2
+
+StroBE$NIHSS_Total=rowSums(StroBE[,c("NIHSS_Unconsciousness", "NIHSS_LOC_Questions", "NIHSS_LOC_Commands", "NIHSS_Gaze_Deviation","NIHSS_Hemianopia","NIHSS_Facial_Palsy","NIHSS_LArm_Drift", "NIHSS_RArm_Drift","NIHSS_RLeg_Drift", "NIHSS_LLeg_Drift", "NIHSS_Ataxia", "NIHSS_Loss_of_Sensation","NIHSS_Aphasia","NIHSS_Dysarthria", "NIHSS_Inattention_or_Extinction")])
+
+#Select variables 
+StroBEF=StroBE%>%
+  select(Age_in_Years,Gender,History_of_Stroke,History_of_TIA,History_of_Diabetes,History_of_Hypertension,
+         Pre_Stroke_Disability_mRS_3_to_5,History_or_Presence_of_Atrial_Fibrillation,Capillary_Blood_Glucose_mmol_L,
+         Systolic_Blood_Pressure_mmHg,Diastolic_Blood_Pressure_mmHg,Heart_Rate_BPM,Temperature_Degrees_C,
+         Peripheral_Oxygen_Saturation_Percent,Consciousness_AVPU_max_3,
+         FAST_Facial_Weakness,FAST_Arm_Weakness,FAST_Speech_Disturbance, Diagnosis)  
+
+StroBEN=StroBE%>%
+  select(Age_in_Years,Gender,History_of_Stroke,History_of_TIA,History_of_Diabetes,History_of_Hypertension,
+         Pre_Stroke_Disability_mRS_3_to_5,History_or_Presence_of_Atrial_Fibrillation,Capillary_Blood_Glucose_mmol_L,
+         Systolic_Blood_Pressure_mmHg,Diastolic_Blood_Pressure_mmHg,Heart_Rate_BPM,Temperature_Degrees_C,
+         Peripheral_Oxygen_Saturation_Percent,Consciousness_AVPU_max_3,
+         NIHSS_Facial_Palsy,NIHSS_Arm_Weakness,NIHSS_Speech_Disturbance, Diagnosis)
+
+StroBEB=StroBE%>%
+  select(Age_in_Years,Gender,History_of_Stroke,History_of_TIA,History_of_Diabetes,History_of_Hypertension,
+         Pre_Stroke_Disability_mRS_3_to_5,History_or_Presence_of_Atrial_Fibrillation,Capillary_Blood_Glucose_mmol_L,
+         Systolic_Blood_Pressure_mmHg,Diastolic_Blood_Pressure_mmHg,Heart_Rate_BPM,Temperature_Degrees_C,
+         Peripheral_Oxygen_Saturation_Percent,Consciousness_AVPU_max_3,
+         NIHSS_Facial_Palsy,NIHSS_Arm_Weakness,NIHSS_Speech_Disturbance, FAST_Facial_Weakness,FAST_Arm_Weakness,FAST_Speech_Disturbance, Diagnosis)
+
+
+#install.packages("readxl")
+#library("readxl")
+setwd("X:/STROKE-StroBE/StroBE and ABACUS data for Hannah")
+ABACUS=read_excel("ABACUS_data anonymised and clinical variables.xlsx", 
+                  sheet = "Study results")
+
+#Diagnosis
+ABACUS$Diagnosis=as.numeric(mapvalues(ABACUS$"Lisa category for LVO v non-LVO analysis", c("LVO", "non-LVO", "exclude"), c(1, 2, 0)))
+ABACUS=filter(ABACUS, Diagnosis!=0, ambadm=="Yes")
+ABACUS$Diagnosis=mapvalues(ABACUS$Diagnosis, c(1, 2), c(1, 0))
+
+#Demographics 
+ABACUS$"Age_in_Years"=as.numeric(ABACUS$agecba)
+ABACUS$"Gender"=as.numeric(mapvalues(ABACUS$gender, c("Male", "Female"), c(1, 2)))
+
+#Past Medical History
+ABACUS$"History_of_Stroke"=as.numeric(mapvalues(ABACUS$pmhstroke, c("Yes", "No", "Unknown"), c(1, 0, 0)))
+ABACUS$"History_of_TIA"=as.numeric(mapvalues(ABACUS$pmhtia, c("Yes", "No", "Unknown"), c(1, 0, 0)))
+ABACUS$"History_of_Diabetes"=as.numeric(mapvalues(ABACUS$pmhdiabetes, c("Yes", "No", "Unknown"), c(1, 0, 0)))
+ABACUS$"History_of_Hypertension"=as.numeric(mapvalues(ABACUS$pmhhypertension, c("Yes", "No", "Unknown"), c(1, 0, 0)))
+ABACUS$"Pre_Stroke_Disability_mRS"=as.numeric(mapvalues(ABACUS$preadMRS, c("No symptoms", 
+                                                                                     "No significant disability: able to carry out all usual duties and activities", 
+                                                                                     "Slight disability: unable to carry out all previous activities but able to look after own affairs without assistance",
+                                                                                     "Moderate disability: requiring some help, but able to walk without assistance",
+                                                                                     "Moderately severe disability: unable to walk without assistance, and unable to attend to own bodily needs without assistance", 
+                                                                           "Severe disability: bedridden, incontinent and requiring constant nursing care and attention"),
+                                                        c(0, 1, 2, 3, 4, 5)))
+ABACUS$Pre_Stroke_Disability_mRS_3_to_5=ifelse(ABACUS$Pre_Stroke_Disability_mRS>2, 1, 0)
+
+
+ABACUS$History_or_Presence_of_Atrial_Fibrillation=ifelse(ABACUS$pmhaf=="Yes" & ABACUS$afpresent=="Yes", "Yes", "No")
+ABACUS$History_or_Presence_of_Atrial_Fibrillation=as.numeric(mapvalues(ABACUS$History_or_Presence_of_Atrial_Fibrillation, c("Yes", "No"), c(1, 0)))
+
+#Physiological Observations
+ABACUS$Capillary_Blood_Glucose_mmol_L=as.numeric(mapvalues(ABACUS$firstglucose, c("-95", "-98", "-99"), c(" ", " ", " ")))
+ABACUS$Systolic_Blood_Pressure_mmHg=as.numeric(mapvalues(ABACUS$admsbp, c("-95", "-98", "-99"), c(" ", " ", " ")))
+ABACUS$Diastolic_Blood_Pressure_mmHg=as.numeric(mapvalues(ABACUS$admdbp, c("-95", "-98", "-99"), c(" ", " ", " ")))
+ABACUS$Heart_Rate_BPM=as.numeric(mapvalues(ABACUS$firsthr, c("-95", "-98", "-99"), c(" ", " ", " ")))
+ABACUS$Temperature_Degrees_C=as.numeric(mapvalues(ABACUS$admtemp, c("-95", "-98", "-99"), c(" ", " ", " ")))
+ABACUS$Peripheral_Oxygen_Saturation_Percent=as.numeric(mapvalues(ABACUS$admoxygen, c("-95", "-98", "-99"), c(" ", " ", " ")))
+ABACUS$Consciousness_AVPU_max_3=as.numeric(mapvalues(ABACUS$arrivalconsciousness, c("A - Awake/alert", "V - Responds to verbal stimulation", "P – Responds to painful stimulation", "U - Unconscious"), c(0, 1, 2, 3)))
+
+#Symptoms
+ABACUS$FAST_Facial_Weakness=as.numeric(mapvalues(ABACUS$facialweakness, c("Yes", "No"), c(1, 0)))
+ABACUS$FAST_Arm_Weakness=as.numeric(mapvalues(ABACUS$armweakness, c("Yes", "No"), c(1, 0)))
+ABACUS$FAST_Speech_Disturbance=as.numeric(mapvalues(ABACUS$speechdisturbance, c("Yes", "No"), c(1, 0)))
+
+ABACUS$FAST_Positive=ifelse(rowSums(ABACUS[,c("FAST_Facial_Weakness", "FAST_Arm_Weakness", "FAST_Speech_Disturbance")])>0, 1, 0)
+
+#NIHSS symptoms (for later)
+
+ABACUS$NIHSS_Facial_Palsy=as.numeric(mapvalues(ABACUS$nihss4, c("Normal symmetrical movement", "Minor paralysis (flattened nasolabial fold, asymmetry on smiling)",
+                                                                          "Partial paralysis (total or near total paralysis of lower face)", 
+                                                                          "Complete paralysis of one or both sides (absence of facial movement in the upper and lower face)", "##USER_MISSING_99##"), c(0, 1, 1, 1, ""))) #or 0,1,2
+ABACUS$NIHSS_LArm_Drift=as.numeric(mapvalues(ABACUS$nihss5L, c("Normal (extends arm 90° or 45° for 10 sec without drift)", "Drift","Some effort against gravity", "No effort against gravity",
+                                                                 "No movement", "Untestable (e.g. amputated)", "##USER_MISSING_99##"), c(0, 1, 2, 3, 4, 0, "")))
+ABACUS$NIHSS_RArm_Drift=as.numeric(mapvalues(ABACUS$nihss5R, c("Normal (extends arm 90° or 45° for 10 sec without drift)", "Drift","Some effort against gravity", "No effort against gravity",
+                                                                 "No movement", "Untestable (e.g. amputated)", "##USER_MISSING_99##"), c(0, 1, 2, 3, 4, 0, "")))
+ABACUS$NIHSS_Arm_Drift=ifelse(ABACUS$NIHSS_RArm_Drift>0 | ABACUS$NIHSS_LArm_Drift>0, 1, 0)
+ABACUS$NIHSS_Arm_Weakness=ABACUS$NIHSS_Arm_Drift
+
+#remember, it's actually labelled as arm in the database 
+ABACUS$NIHSS_LLeg_Drift=as.numeric(mapvalues(ABACUS$nihss6L, c("Normal (extends arm 90° or 45° for 10 sec without drift)", "Drift","Some effort against gravity", "No effort against gravity",
+                                                                 "No movement", "Untestable (e.g. amputated)", "##USER_MISSING_99##"), c(0, 1, 2, 3, 4, 0, "")))
+ABACUS$NIHSS_RLeg_Drift=as.numeric(mapvalues(ABACUS$nihss6R, c("Normal (extends arm 90° or 45° for 10 sec without drift)", "Drift","Some effort against gravity", "No effort against gravity",
+                                                                 "No movement", "Untestable (e.g. amputated)", "##USER_MISSING_99##"), c(0, 1, 2, 3, 4, 0, "")))
+ABACUS$NIHSS_Leg_Drift=ifelse(ABACUS$NIHSS_RLeg_Drift>0 | ABACUS$NIHSS_LLeg_Drift>0, 1, 0)
+
+ABACUS$NIHSS_Ataxia=as.numeric(mapvalues(ABACUS$nihss7, c("No ataxia", "Present in one limb", "Present in two limbs", "##USER_MISSING_99##"), c(0, 1, 2, ""))) #or 0,1,2
+ABACUS$NIHSS_Loss_of_Sensation=as.numeric(mapvalues(ABACUS$nihss8, c("Normal", "Mild to moderate decrease in sensation", "Severe to total sensory loss", "##USER_MISSING_99##"), c(0, 1, 2, ""))) #or 0,1,2
+ABACUS$NIHSS_Aphasia=as.numeric(mapvalues(ABACUS$nihss9, c("No aphasia", "Mild to moderate aphasia", "Severe aphasia", "Mute", "##USER_MISSING_99##"), c(0, 1, 2, 3, ""))) #or 0,1,2
+ABACUS$NIHSS_Dysarthria=as.numeric(mapvalues(ABACUS$nihss10, c("Normal articulation", "Mild to moderate slurring of words", "Near unintelligible or unable to speak", "Intubated or other physical barrier", "##USER_MISSING_99##"), c(0, 1, 2, 0, ""))) #or 0,1,2
+ABACUS$NIHSS_Speech_Disturbance=ifelse(ABACUS$NIHSS_Dysarthria>0 | ABACUS$NIHSS_Aphasia>0, 1, 0)
+ABACUS$NIHSS_Inattention_or_Extinction=as.numeric(mapvalues(ABACUS$nihss11, c("Normal", "Inattention or extinction to bilateral simultaneous stimulation in one of the sensory modalities", "Severe hemi-inattention to more than one modality", "##USER_MISSING_99##"), c(0, 1, 2, ""))) #or 0,1,2
+
+ABACUS$NIHSS_Total=rowSums(ABACUS[,c("NIHSS_Unconsciousness", "NIHSS_LOC_Questions", "NIHSS_LOC_Commands", "NIHSS_Gaze_Deviation","NIHSS_Hemianopia","NIHSS_Facial_Palsy","NIHSS_LArm_Drift", "NIHSS_RArm_Drift","NIHSS_RLeg_Drift", "NIHSS_LLeg_Drift", "NIHSS_Ataxia", "NIHSS_Loss_of_Sensation","NIHSS_Aphasia","NIHSS_Dysarthria", "NIHSS_Inattention_or_Extinction")])
+
+
+###Select variables###
+ABACUSF=ABACUS%>%
+  select(Age_in_Years,Gender,History_of_Stroke,History_of_TIA,History_of_Diabetes,History_of_Hypertension,
+         Pre_Stroke_Disability_mRS_3_to_5,History_or_Presence_of_Atrial_Fibrillation,Capillary_Blood_Glucose_mmol_L,
+         Systolic_Blood_Pressure_mmHg,Diastolic_Blood_Pressure_mmHg,Heart_Rate_BPM,Temperature_Degrees_C,
+         Peripheral_Oxygen_Saturation_Percent,Consciousness_AVPU_max_3,
+         FAST_Facial_Weakness,FAST_Arm_Weakness,FAST_Speech_Disturbance, Diagnosis)
+
+ABACUSN=ABACUS%>%
+  select(Age_in_Years,Gender,History_of_Stroke,History_of_TIA,History_of_Diabetes,History_of_Hypertension,
+         Pre_Stroke_Disability_mRS_3_to_5,History_or_Presence_of_Atrial_Fibrillation,Capillary_Blood_Glucose_mmol_L,
+         Systolic_Blood_Pressure_mmHg,Diastolic_Blood_Pressure_mmHg,Heart_Rate_BPM,Temperature_Degrees_C,
+         Peripheral_Oxygen_Saturation_Percent,Consciousness_AVPU_max_3, NIHSS_Facial_Palsy,
+         NIHSS_Arm_Weakness,NIHSS_Speech_Disturbance, Diagnosis)
+
+
+#Bind datasets for FAST model together(first on top)
+StroBEABACUSF=bind_rows(StroBEF, ABACUSF)
+StroBEABACUSF
+
+#Shuffle dataset for FAST model
+set.seed(73)
+StroBEABACUSFS=StroBEABACUSF[sample(1:nrow(StroBEABACUSF)),]
+
+#Bind datasets for NIHSS model 
+StroBEABACUSN=bind_rows(StroBEN, ABACUSN)
+StroBEABACUSN
+
+#Shuffle dataset for NIHSS model
+set.seed(73)
+StroBEABACUSNS=StroBEABACUSN[sample(1:nrow(StroBEABACUSN)),]
+
+
+#*********************End of variable transformation********************************************************
+```
+
+######Subset chosen predictors including missing data##########
+```{r}
+
+StroBEABACUS_LVO=StroBEABACUSNS
+
+```
+
+#### Factorise diagnosis for classification #########
+```{r}
+
+StroBEABACUS_LVO$Diagnosis=as.factor(mapvalues(StroBEABACUS_LVO$Diagnosis, c(0, 1), c("non-LVO", "LVO")))
+
+
+```
+
+###### Check class ratio ##########
+```{r}
+
+LVO_count=sum(StroBEABACUS_LVO$Diagnosis=="LVO")
+LVO_prop=LVO_count/nrow(StroBEABACUS_LVO)*100
+Non_LVO_count=sum(StroBEABACUS_LVO$Diagnosis=="non-LVO")
+Non_LVO_prop=Non_LVO_count/nrow(StroBEABACUS_LVO)*100
+Total_cases=nrow(StroBEABACUS_LVO)
+
+sprintf("%d/%d (%.2f%%) of cases were LVO, %d/%d (%.2f%%) were non-LVO", LVO_count, 
+        Total_cases, LVO_prop, Non_LVO_count, Total_cases, Non_LVO_prop)
+
+```
+ 
+##### Perform stratified k-fold cross validation on training set #######
+```{r }
+
+set.seed(73) # to keep same splits if rerun
+Kfold_LVO_samples=vfold_cv(StroBEABACUS_LVO, v=5, repeats=3, strata=Diagnosis)
+#stratify to keep class ratio within each fold
+
+```
+
+##### View folds #####
+```{r}
+#view first folds:
+lapply(Kfold_LVO_samples, head)
+#view all folds:
+Kfold_LVO_samples$folds
+#View evaluation results:
+Kfold_LVO_samples
+
+####see training v testing set within each fold####
+Kfold_LVO_1 = get_rsplit(Kfold_LVO_samples, index = 1) 
+split_tib1=tidy(Kfold_LVO_1)
+
+Kfold_LVO_2 = get_rsplit(Kfold_LVO_samples, index = 2) 
+split_tib2=tidy(Kfold_LVO_2)
+
+Kfold_LVO_3 = get_rsplit(Kfold_LVO_samples, index = 3) 
+split_tib3=tidy(Kfold_LVO_3)
+
+Kfold_LVO_4 = get_rsplit(Kfold_LVO_samples, index = 4) 
+split_tib4=tidy(Kfold_LVO_4)
+
+Kfold_LVO_5 = get_rsplit(Kfold_LVO_samples, index = 5) 
+split_tib5=tidy(Kfold_LVO_5)
+
+Kfold_LVO_6 = get_rsplit(Kfold_LVO_samples, index = 6) 
+split_tib6=tidy(Kfold_LVO_6)
+
+Kfold_LVO_7 = get_rsplit(Kfold_LVO_samples, index = 7) 
+split_tib7=tidy(Kfold_LVO_7)
+
+Kfold_LVO_8 = get_rsplit(Kfold_LVO_samples, index = 8) 
+split_tib8=tidy(Kfold_LVO_8)
+
+Kfold_LVO_9 = get_rsplit(Kfold_LVO_samples, index = 9) 
+split_tib9=tidy(Kfold_LVO_9)
+
+Kfold_LVO_10 = get_rsplit(Kfold_LVO_samples, index = 10) 
+split_tib10=tidy(Kfold_LVO_10)
+
+Kfold_LVO_11 = get_rsplit(Kfold_LVO_samples, index = 11) 
+split_tib11=tidy(Kfold_LVO_11)
+
+Kfold_LVO_12 = get_rsplit(Kfold_LVO_samples, index = 12) 
+split_tib12=tidy(Kfold_LVO_12)
+
+Kfold_LVO_13 = get_rsplit(Kfold_LVO_samples, index = 13) 
+split_tib13=tidy(Kfold_LVO_13)
+
+Kfold_LVO_14 = get_rsplit(Kfold_LVO_samples, index = 14) 
+split_tib14=tidy(Kfold_LVO_14)
+
+Kfold_LVO_15 = get_rsplit(Kfold_LVO_samples, index = 15) 
+split_tib15=tidy(Kfold_LVO_15)
+
+#Identifies the assessment set/actual fold data rather than whole split
+
+KF_LVO_1=as.data.frame(complement(Kfold_LVO_1))
+KF_LVO_1=mutate(KF_LVO_1, Fold="Fold 1", Repeat="Repeat 1")
+colnames(KF_LVO_1)[1]="N"
+
+KF_LVO_2=as.data.frame(complement(Kfold_LVO_2))
+KF_LVO_2=mutate(KF_LVO_2, Fold="Fold 2", Repeat="Repeat 1")
+colnames(KF_LVO_2)[1]="N"
+
+KF_LVO_3=as.data.frame(complement(Kfold_LVO_3))
+KF_LVO_3=mutate(KF_LVO_3, Fold="Fold 3", Repeat="Repeat 1")
+colnames(KF_LVO_3)[1]="N"
+
+KF_LVO_4=as.data.frame(complement(Kfold_LVO_4))
+KF_LVO_4=mutate(KF_LVO_4, Fold="Fold 4", Repeat="Repeat 1")
+colnames(KF_LVO_4)[1]="N"
+
+KF_LVO_5=as.data.frame(complement(Kfold_LVO_5))
+KF_LVO_5=mutate(KF_LVO_5, Fold="Fold 5", Repeat="Repeat 1")
+colnames(KF_LVO_5)[1]="N"
+
+KF_LVO_6=as.data.frame(complement(Kfold_LVO_6))
+KF_LVO_6=mutate(KF_LVO_6, Fold="Fold 6", Repeat="Repeat 2")
+colnames(KF_LVO_6)[1]="N"
+
+KF_LVO_7=as.data.frame(complement(Kfold_LVO_7))
+KF_LVO_7=mutate(KF_LVO_7, Fold="Fold 7", Repeat="Repeat 2")
+colnames(KF_LVO_7)[1]="N"
+
+KF_LVO_8=as.data.frame(complement(Kfold_LVO_8))
+KF_LVO_8=mutate(KF_LVO_8, Fold="Fold 8", Repeat="Repeat 2")
+colnames(KF_LVO_8)[1]="N"
+
+KF_LVO_9=as.data.frame(complement(Kfold_LVO_9))
+KF_LVO_9=mutate(KF_LVO_9, Fold="Fold 9", Repeat="Repeat 2")
+colnames(KF_LVO_9)[1]="N"
+
+KF_LVO_10=as.data.frame(complement(Kfold_LVO_10))
+KF_LVO_10=mutate(KF_LVO_10, Fold="Fold 10", Repeat="Repeat 2")
+colnames(KF_LVO_10)[1]="N"
+
+KF_LVO_11=as.data.frame(complement(Kfold_LVO_11))
+KF_LVO_11=mutate(KF_LVO_11, Fold="Fold 11", Repeat="Repeat 3")
+colnames(KF_LVO_11)[1]="N"
+
+KF_LVO_12=as.data.frame(complement(Kfold_LVO_12))
+KF_LVO_12=mutate(KF_LVO_12, Fold="Fold 12", Repeat="Repeat 3")
+colnames(KF_LVO_12)[1]="N"
+
+KF_LVO_13=as.data.frame(complement(Kfold_LVO_13))
+KF_LVO_13=mutate(KF_LVO_13, Fold="Fold 13", Repeat="Repeat 3")
+colnames(KF_LVO_13)[1]="N"
+
+KF_LVO_14=as.data.frame(complement(Kfold_LVO_14))
+KF_LVO_14=mutate(KF_LVO_14, Fold="Fold 14", Repeat="Repeat 3")
+colnames(KF_LVO_14)[1]="N"
+
+KF_LVO_15=as.data.frame(complement(Kfold_LVO_15))
+KF_LVO_15=mutate(KF_LVO_15, Fold="Fold 15", Repeat="Repeat 3")
+colnames(KF_LVO_15)[1]="N"
+
+K_Folds=bind_rows(KF_LVO_1, KF_LVO_2, KF_LVO_3, KF_LVO_4, KF_LVO_5, KF_LVO_6, KF_LVO_7, KF_LVO_8, KF_LVO_9, KF_LVO_10, KF_LVO_11, KF_LVO_12, KF_LVO_13, KF_LVO_14, KF_LVO_15)
+
+#Create a row number column in the dataframe with diagnosis label to use to match with the fold row number to enable merge 
+DX_Tr_N=StroBEABACUS_LVO%>%
+  mutate(N=row_number())
+
+#merge the new merged fold dataframe with the class label dataframe 
+merger=merge(DX_Tr_N,K_Folds, by="N", all.x=TRUE)
+
+
+#Tabulate the class ratio for each fold 
+fold_ratio=merger%>%
+  select("Fold", "Repeat", Diagnosis)
+fold_ratiotbl=tbl_strata(fold_ratio, strata = "Repeat", \(fold_ratio){
+tbl_summary(data=fold_ratio,
+            by="Fold",
+              statistic = list(
+                all_categorical() ~ c("{n} / {N} ({p}%)")
+              ))%>%
+       add_n()%>%
+      bold_labels()},
+    .combine_with = "tbl_stack")%>%
+  as_gt()%>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_row_groups(groups = everything()))
+fold_ratiotbl
+
+```
+
+#### View proportion of LVO patients in each training split of the folds #####
+```{r}
+
+split_props=map_dbl(Kfold_LVO_samples$splits,
+        function(x){
+          k_class=as.data.frame(x)$Diagnosis
+          mean(k_class=="non-LVO")
+        })
+split_props
+```
+
+###### Create Model Specification ######
+```{r}
+#For weighting imbalanced dataset
+Neg_class=sum(StroBEABACUS_LVO$Diagnosis=="non-LVO")
+Pos_class=sum(StroBEABACUS_LVO$Diagnosis=="LVO")
+
+Model_1_LVO_spec = boost_tree(
+  trees = 5000,    #same as nrounds
+  stop_iter = tune(),  #early stopping if no improvement in classification error for N iterations - parsnip version of XGB early_stop 
+  tree_depth = tune(),  #how deep each tree can grow (number of splits) - same as max_depth - pruning process
+  min_n = tune(),  #min N data points for new node - same as min child weight - pruning process
+  loss_reduction = tune(), #regularisation- min loss reduction required to make another node - parsnip version of gamma   
+  sample_size = tune(), # number of observations subsampled randomly for each tree - same as subsample
+  mtry = tune(),    # number of covariates to randomly choose from for each tree
+  learn_rate = tune(), # step size between updating weights - parsnip version of ETA 
+  ) %>%
+  set_engine("xgboost", validation=0.2, scale_pos_weight=Neg_class/Pos_class, verbose=TRUE) %>%
+  set_mode("classification") 
+Model_1_LVO_spec
+
+```
+
+##### Latin Hypercube search for optimal hyperparameters#####
+```{r}
+
+# Create 50 combinations of these parameters
+
+mtry_max= ncol(StroBEABACUS_LVO)-1 
+
+set.seed(73) # reproducible 
+xgb_grid_LVO = grid_latin_hypercube(
+  stop_iter(),
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+  mtry(range = c(1, mtry_max)), 
+  learn_rate(),
+  size = 100) # number of models to test params on
+  
+```
+
+###### Create Model Workflow (with model formula) ######
+```{r}
+
+    xgb_wf_LVO = workflow() %>%
+    add_formula(Diagnosis ~ .) %>%
+    add_model(Model_1_LVO_spec)
+
+```
+
+##### Tune model hyperparameters to find the best LH combinations #####
+```{r}
+
+set.seed(73) # reproducible 
+xgb_tg_LVO = tune_grid(
+    xgb_wf_LVO,
+    resamples = Kfold_LVO_samples,
+    grid = xgb_grid_LVO,
+    control = control_grid(save_pred = TRUE,
+                           verbose = TRUE)
+  )
+
+```
+
+##### Inspect parameter combinations with respect to evaluation statistics #####
+```{r}
+
+Best_ESauc_params=show_best(xgb_tg_LVO, metric = "roc_auc")  
+Best_ESauc_params
+
+Best_ESauc=show_best(xgb_tg_LVO, metric = "roc_auc") %>%
+  select(mean, .config)
+Best_ESauc
+
+Best_ESaLVO_params=show_best(xgb_tg_LVO, metric = "accuracy")
+Best_ESaLVO_params
+
+Best_ESaLVO=show_best(xgb_tg_LVO, metric = "accuracy") %>%
+  select(mean, .config)
+Best_ESaLVO
+
+```
+
+##### Visualise parameter and model effects on AUC/RMSE #####
+```{r}
+
+#all hyperparameter metrics for all models
+
+xgb_tg_mets_LVO=xgb_tg_LVO %>%
+  collect_metrics()
+xgb_tg_mets_LVO
+
+xgb_tg_preds_LVO=xgb_tg_LVO %>%
+  collect_predictions()
+xgb_tg_preds_LVO
+
+#AUC only 
+XGB_TG_AUCS_LVO=xgb_tg_mets_LVO%>%
+  filter(.metric=="roc_auc")%>%
+  arrange(desc(mean))
+XGB_TG_AUCS_LVO
+
+autoplot(xgb_tg_LVOC$loss_reduction, metric="roc_auc", by=loss_reduction)
+
+#loss reduction 
+xgb_tg_LR_LVO=xgb_tg_LVO %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  select(mean, loss_reduction, .config) %>%
+  pivot_longer(loss_reduction,
+               values_to = "value",
+               names_to = "parameter"
+  ) %>%
+  ggplot(aes(value,
+             mean,
+             color = .config)) +
+  geom_point() +
+  facet_wrap(~parameter)
+xgb_tg_LR_LVO
+
+
+#AUC in terms of all parameters 
+
+  #Early stopping
+  xgb_tg_auc_LVO=xgb_tg_LVO %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  select(mean, mtry:sample_size, .config) %>%
+  pivot_longer(mtry:sample_size,
+               values_to = "value",
+               names_to = "parameter"
+  ) %>%
+  ggplot(aes(value,
+             mean,
+             color = .config)) +
+  geom_point() +
+  facet_wrap(~parameter, scales="free_x")
+  xgb_tg_auc_LVO
+  
+  ggsave(plot=xgb_tg_auc_LVO, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Hyperparameters", filename="NIHSS Hyperparameters.png", height=8, width=16) 
+  
+  #Accuracy
+xgb_tg_aLVO_LVOC=xgb_tg_LVOC %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  select(mean, mtry:sample_size, .config) %>%
+  pivot_longer(mtry:sample_size,
+               values_to = "value",
+               names_to = "parameter"
+  ) %>%
+  ggplot(aes(value,
+             mean,
+             color = .config)) +
+  geom_point() +
+  facet_wrap(~parameter)
+xgb_tg_aLVO_LVOC
+
+```
+
+##### plot the tuning process in terms of tree depth (can do others) ######
+```{r}
+
+#loss reduction
+LR_tune_plot_LVOC = xgb_tg_LVOC  %>%
+  collect_metrics() %>% #Collect metrics from tuning
+  mutate(tree_depth = factor(tree_depth)) %>%
+  ggplot(aes(loss_reduction, mean, color = tree_depth)) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 1.5) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0) + 
+  theme_minimal()
+print(LR_tune_plot_LVOC)
+
+#Min_N
+Min_N_tune_plot_LVOC = xgb_tg_LVOC  %>%
+  collect_metrics() %>% #Collect metrics from tuning
+  mutate(tree_depth = factor(tree_depth)) %>%
+  ggplot(aes(min_n, mean, color = tree_depth)) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 1.5) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0) + 
+  theme_minimal()
+print(Min_N_tune_plot_LVOC)
+
+#Sample Size
+SampleSz_tune_plot_LVOC = xgb_tg_LVOC  %>%
+  collect_metrics() %>% #Collect metrics from tuning
+  mutate(tree_depth = factor(tree_depth)) %>%
+  ggplot(aes(sample_size, mean, color = tree_depth)) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 1.5) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0) + 
+  theme_minimal()
+print(SampleSz_tune_plot_LVOC)
+
+#mtry
+mtry_tune_plot_LVOC = xgb_tg_LVOC  %>%
+  collect_metrics() %>% #Collect metrics from tuning
+  mutate(tree_depth = factor(tree_depth)) %>%
+  ggplot(aes(mtry, mean, color = tree_depth)) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 1.5) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0) + 
+  theme_minimal()
+print(mtry_tune_plot_LVOC)
+
+#learn rate
+learn_rate_tune_plot_LVOC = xgb_tg_LVOC  %>%
+  collect_metrics() %>% #Collect metrics from tuning
+  mutate(tree_depth = factor(tree_depth)) %>%
+  ggplot(aes(learn_rate, mean, color = tree_depth)) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 1.5) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0) + 
+  theme_minimal()
+print(learn_rate_tune_plot_LVOC)
+```
+
+###### Select best parameters
+```{r}
+###### Select model with best parameters #########
+
+#AUC
+best_auc_LVO = select_best(xgb_tg_LVO,metric="roc_auc")
+best_auc_LVO
+
+#Accuracy
+best_acc_LVO = select_best(xgb_tg_LVO,"accuracy")
+best_acc_LVO
+
+```
+
+##### Finalise worklow using optimum parameters based on AUC #####
+```{r}
+
+final_xgb_LVO = finalize_workflow(
+  xgb_wf_LVO,
+  best_auc_LVO
+)
+final_xgb_LVO
+
+```
+
+##### Fit to resamples for less biased evaluation estimate (cant use resamples object for plots etc) #####
+```{r}
+
+set.seed(73)
+Trained_XGB=fit_resamples(final_xgb_LVO, resamples=Kfold_LVO_samples, control=control_grid(save_pred=TRUE))
+#These resampling statistics are an effective method for measuring model performance without predicting the training set directly as a whole.
+
+
+################Training set metrics for resamples############
+
+Trained_XGB_Mets=Trained_XGB%>%
+  collect_metrics()
+
+###########Training set predictions for resamples############
+Trained_XGB_Preds=Trained_XGB%>%
+  collect_predictions()
+
+#Averaging the predictions (three per patient) and tidying the dataframe for plotting
+
+Trained_XGB_Preds$.pred_non_LVO=Trained_XGB_Preds$`.pred_non-LVO`
+Trained_XGB_Preds$Diagnosis=as.numeric(mapvalues(Trained_XGB_Preds$Diagnosis, c("LVO", "non-LVO"), c(1, 2)))
+
+Trained_XGB_Preds=Trained_XGB_Preds%>%
+  select(.row, Diagnosis, .pred_LVO, .pred_non_LVO)%>%
+  dplyr::group_by(.row)%>%
+dplyr::summarise(.pred_LVO=mean(.pred_LVO), .pred_non_LVO=mean(.pred_non_LVO), Diagnosis=mean(Diagnosis))
+
+Trained_XGB_Preds$Diagnosis=mapvalues(Trained_XGB_Preds$Diagnosis, c(1, 2), c("LVO", "non-LVO"))
+
+TR_Preds_DF=data.frame(Trained_XGB_Preds, Trained_XGB$.predictions)
+
+```
+
+##### Fit model to dataset #####
+```{r}
+
+#can save this trained workflow as model and use for prediction
+
+set.seed(73)
+XGB.booster_fit_LVOwd=final_xgb_LVO %>%
+fit(data = StroBEABACUS_LVO)%>%
+  extract_fit_parsnip()
+XGB.booster_fit_LVOwd
+
+
+```
+
+##### Extract fit from workflow to use model for predictions etc downstream #####
+```{r}
+
+LVO_fit=extract_fit_engine(XGB.booster_fit_LVOwd)
+
+#Save the model if desire 
+xgb.save(LVO_fit, "XGB_LVO_FAST")
+```
+
+##### Evaluation log - logloss/error based on number of trees #####
+```{r}
+
+XGB_TR_Eval_LVO=LVO_fit$evaluation_log
+LVO_fit$best_iteration
+LVO_fit$best_ntreelimit
+LVO_fit$best_score #logloss at best iteration
+LVO_fit$best_msg
+
+```
+
+##### Plot evaluation log to visualise early stopping #####
+```{r}
+
+Eval_mets_LVO=melt(
+  LVO_fit$evaluation_log,
+  id.vars="iter",
+  variable.name="Set",
+  value.name="Error"
+)
+
+Eval_plot=ggplot(Eval_mets_LVO, aes(iter, Error, group=Set))+
+  geom_line(aes(color=Set), linewidth=1.5)+
+  scale_color_manual(values="red",labels="Training Sample")+
+  labs(title="Prediction error loss according to number of trees")+
+  xlab("Tree Number")+
+  ylab("Prediction Error")+
+  geom_vline(aes(xintercept=LVO_fit$best_iteration), color="black")+
+  theme_classic() +
+  theme(plot.title=element_text(face="bold", hjust=.5, size=8),
+        legend.position.inside = c(.95, .8),
+        legend.justification = c("right", "top"),
+        legend.title = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor=element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank())
+   Eval_plot
+   
+   ggsave(plot=Eval_plot, filename="Evaluation Log.png", path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots", height=5, width=8)
+
+```
+
+##### Predictions #####
+```{r}
+#Make diagnosis numeric again and map values
+DX_LVO_num=StroBEABACUSFS
+DX_LVO_num$Diagnosis=as.numeric(mapvalues(DX_LVO_num$Diagnosis, c("non-LVO", "LVO"), c(0, 1)))
+
+#Remove outcome to match model columns for predict function 
+DX_LVO_num_nodx=DX_LVO_num%>%
+  select(-Diagnosis)  
+
+#Need matrix for predict function
+DX_LVO_Mx=as.matrix(DX_LVO_num_nodx)
+
+#check what the model names are to ensure columns match testing matrix
+xgb_names=as.data.frame(xgb_model$feature_names)
+xgb_names
+
+#Predictions
+Predict_fnctLVO=as.data.frame(predict(LVO_fit, DX_LVO_Mx))
+
+#leaf id numbers 
+Leaf_pred=predict(LVO_fit, DX_LVO_Mx, predleaf=TRUE)
+
+#Tidy prediction dataframe
+Predict_fnctLVO$Row=row(Predict_fnctLVO)
+DX_LVOES_num=data.frame(StroBEABACUSFS, row(StroBEABACUSFS)[, 1])
+
+colnames(Predict_fnctLVO)[2]="Row"
+colnames(DX_LVOES_num)[20]="Row"
+
+LVO_predict=merge(Predict_fnctLVO, DX_LVOES_num, by="Row")
+
+colnames(LVO_predict)[1]="Row"
+colnames(LVO_predict)[2]="LVO_Prediction"
+
+LVO_predict$non_LVO_Prediction=1-LVO_predict$LVO_Prediction
+
+LVO_predict$Diagnosis=LVO_predict$Diagnosis%>%
+  mapvalues(c(0, 1), c("non-LVO", "LVO"))
+
+  ggplot(LVO_predict, aes(LVO_Prediction))+
+    geom_histogram()
+```
+
+###### ROC curves ######
+```{r}
+
+## Cross validated predictions to evaluate performance without being too optimistic
+Trained_XGB_Preds$"LVO"=Trained_XGB_Preds$.pred_LVO # tidy column name for prediction
+
+# Calculate ROC curve, including sensitivities and specificities at all thresholds
+Res_ROC_LVO=roc(Trained_XGB_Preds$Diagnosis, Trained_XGB_Preds$LVO, levels=c(control="non-LVO", case="LVO"), direction="<")
+Res_ROC_LVO
+
+# Retrieve AUC from ROC
+Res_AUC_LVO=round(auc(Res_ROC_LVO),4)
+Res_AUC_LVO
+
+# Dataframe of sensitivities, specificities and thresholds
+Trained_XGB_Preds_Fct=Trained_XGB_Preds
+  Trained_XGB_Preds_Fct$Diagnosis=as.factor(Trained_XGB_Preds_Fct$Diagnosis)
+  
+CV_XGB_ROC=Trained_XGB_Preds_Fct%>%
+  roc_curve(Diagnosis, LVO_Prediction)
+CV_XGB_ROC
+
+##### Whole dataset predictions #######
+
+# Calculate ROC curve, including sensitivities and specificities at all thresholds 
+XGB_ROCobj_WD = roc(LVO_predict$Diagnosis, LVO_predict$LVO_Prediction, levels=c(control="non-LVO", case="LVO"), direction="<")
+
+# Retrieve AUC from ROC
+LVO_WD_auc=round(auc(LVO_predict$Diagnosis, LVO_predict$LVO_Prediction),4)
+
+# Dataframe of sensitivities, specificities and thresholds
+LVO_Predict_Fct=LVO_predict
+  LVO_Predict_Fct$Diagnosis=as.factor(LVO_Predict_Fct$Diagnosis)
+  
+WD_XGB_ROC=LVO_Predict_Fct%>%
+  roc_curve(Diagnosis, LVO_Prediction)
+WD_XGB_ROC
+
+# Cross validation ROC Curve
+
+Res_Curve_LVO=ggroc(Res_ROC_LVO, color="Red", size=2, legacy.axes = TRUE)+
+  geom_abline() +
+  theme_classic() +
+  theme(plot.title=element_text(face="bold", hjust=.5, size=14),
+        axis.title.x=element_text(face="bold", size=14),
+        axis.title.y=element_text(face="bold", size=14),
+        legend.title=element_text(face="bold", size=14))+
+  ggtitle(paste0("LVO Prediction ROC Curve", " ","AUC= ", Res_AUC_LVOES
+                 )) +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity")
+Res_Curve_LVO
+
+ggsave(plot=Res_Curve_LVO, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/ROC",
+       filename="CV ROC 100lh.png", height=6, width=8)
+
+# Whole dataset ROC Curve
+
+ROC_Curve_LVO=XGB_ROCobj_WD%>%
+  ggroc(color="Red", size=1)+
+  xlab("1-Specificity")+
+  ylab("Sensitivity")+
+  labs(title=paste0("LVO Prediction ROC Curve", " ", "AUC= ", LVO_WD_auc))+
+  theme(plot.title=element_text(hjust=.5),
+        legend.text=element_blank(),
+        legend.title=element_blank(),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor=element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank())
+ROC_Curve_LVO
+
+ggsave(plot = ROC_Curve_LVO, path="C:/Users/nhl60/OneDrive - Newcastle University/PhD - Copy/1. Retrospective Study (Machine Learning)/Data/StroBE, ABACUS, PRISM Machine Learning", filename="LVO ROC Curve.png")
+
+
+###### Overlaying CV and WD ROCS ##### 
+
+TR_Tes_ROCES=list("Whole Dataset ROC"= XGB_ROCobj_WD,
+                "Cross-Validation ROC" = Res_ROC_LVO)
+
+MergedTT_ROCS=ggroc(TR_Tes_ROCES, aes="color", size=1, legacy.axes = TRUE)+
+  geom_abline() +
+  theme_classic() +
+  theme(plot.title=element_text(face="bold", hjust=.1, size=10),
+        axis.title.x=element_text(face="bold"),
+        axis.title.y=element_text(face="bold"),
+        legend.title=element_text(face="bold"))+
+  scale_color_manual(values=c("blue","red"))+
+  ggtitle(paste0("LVO Prediction ROC Curve:", " ", "Cross Validation AUC= ", Res_AUC_LVO, ", ","Whole Dataset AUC= ", LVO_WD_auc
+                 )) +
+  labs(x = "1 - Specificity",
+       y = "Sensitivity",
+       color = "ROC Curve Dataset")
+MergedTT_ROCS
+
+ggsave(plot=MergedTT_ROCS, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/ROC",
+       filename="CV and WD ROCS 100lh.png", height=6, width=8)
+
+```
+
+##### Diagnostic Accuracy Statistics #####
+```{r}
+
+#Threshold selection
+
+### Whole Dataset ###
+    #Youden's Best (maximises sensitivity and specificity)
+Best_thresh=pROC::coords(XGB_ROCobj_WD, "best", ret="threshold", transpose=FALSE)
+Best_thresh
+    # 80% Sensitivity
+XGB_ROCobj_WD[["sensitivities"]] # check closest to 80% sensitivity
+Sens_thresh=pROC::coords(XGB_ROCobj_WD, 0.8046875, "sensitivity")[1]
+Sens_thresh
+    # 80% Specificity
+XGB_ROCobj_WD[["specificities"]] # check closest to 80% specificity
+Spec_thresh=pROC::coords(XGB_ROCobj_WD, 0.8, "specificity")[1]
+Spec_thresh
+
+### Cross validated ###
+    #Youden's Best
+Best_threshkf=pROC::coords(Res_ROC_LVO, "best", ret="threshold", transpose=FALSE)
+Best_threshkf
+    # 80% Sensitivity
+Res_ROC_LVO[["sensitivities"]] # check closest to 80% sensitivity
+Sens_threshkf=pROC::coords(Res_ROC_LVO, .8, "sensitivity")[1]
+    # 80% Specificity
+Res_ROC_LVO[["specificities"]] # check closest to 80% specificity
+Spec_threshkf=pROC::coords(Res_ROC_LVO, 0.804687500, "specificity")[1]
+  
+#Default (0.5)
+#WD
+def_thresh=factor(ifelse(predict(LVO_fit,X_train, type="response")>.5,"LVO","non-LVO"))
+#CV
+def_threshkf=factor(ifelse(Trained_XGB_Preds$.pred_LVO>.5,"LVO","non-LVO"))
+
+### Calculate predictions for thresholds ###
+
+#Whole Dataset
+Youden_Thresh = factor(ifelse(predict(LVO_fit,X_train, type="response")>Best_thresh[1,1], "LVO","non-LVO"))
+Youden_Thresh
+
+Sens_Thresh=factor(ifelse(predict(LVO_fit,X_train,type="response")>Sens_thresh[1,1],"LVO","non-LVO"))
+
+Spec_Thresh=factor(ifelse(predict(LVO_fit,X_train,type="response")>Spec_thresh[1,1],"LVO","non-LVO"))
+
+#Cross Validated
+Youden_Threshkf=factor(ifelse(Trained_XGB_Preds$.pred_LVO>Best_threshkf[1,1],"LVO","non-LVO"))
+
+Sens_Threshkf=factor(ifelse(Trained_XGB_Preds$.pred_LVO>Sens_threshkf[1,1],"LVO","non-LVO"))
+
+Spec_Threshkf=factor(ifelse(Trained_XGB_Preds$.pred_LVO>Spec_threshkf[1,1],"LVO","non-LVO"))
+
+#True class variable
+  Truth_Class=factor(StroBEABACUS_LVO$Diagnosis)
+
+  Truth_Classkf=factor(Trained_XGB_Preds$Diagnosis)
+
+#Default threshold (.5) statistics 
+Preds_def_thresh=cbind(data.frame(def_thresh, Truth_Class))
+
+CM_Stat_def_t=binary_class_cm(Preds_def_thresh$def_thresh, Preds_def_thresh$Truth_Class)
+CM_Stat_def_t
+
+#kf
+Preds_def_threshkf=cbind(data.frame(def_threshkf, Truth_Classkf))
+
+CM_Stat_def_tkf=binary_class_cm(Preds_def_threshkf$def_threshkf, Preds_def_threshkf$Truth_Classkf)
+CM_Stat_def_tkf
+
+
+#####Diagnostic accuracy Statistics for altered threshold ######
+
+
+#Cross Validated
+##Youden CV
+  
+  Preds_Youdenkf=cbind(data.frame(Youden_Threshkf, Truth_Classkf))
+  
+  FPR_CM_Stat_Youdkf=binary_class_cm(Preds_Youdenkf$Youden_Threshkf, Preds_Youdenkf$Truth_Classkf)
+  FPR_CM_Stat_Youdkf
+  
+  FPR_CM_DAStat_Youdkf=data.frame(FPR_CM_Stat_Youdkf$record_level_cm)
+
+##Sensitivity CV
+
+  Preds_Sens_maxkf=cbind(data.frame(Sens_Threshkf, Truth_Classkf))
+  
+  Sens_CM_Stat_maxkf=binary_class_cm(Preds_Sens_maxkf$Sens_Threshkf, Preds_Sens_maxkf$Truth_Classkf)
+  Sens_CM_Stat_maxkf
+  
+  Sens_CM_DAStat_maxkf=data.frame(Sens_CM_Stat_maxkf$record_level_cm)
+  
+##Specificity CV
+
+  Preds_Spec_maxkf=cbind(data.frame(Spec_Threshkf, Truth_Classkf))
+  
+  Spec_CM_Stat_maxkf=binary_class_cm(Preds_Spec_maxkf$Spec_Threshkf, Preds_Spec_maxkf$Truth_Classkf)
+  Spec_CM_Stat_maxkf
+  
+  Spec_CM_DAStat_maxkf=data.frame(Spec_CM_Stat_maxkf$record_level_cm)
+  
+#Whole Dataset
+  
+##Youden
+  
+  Preds_Youden=cbind(data.frame(Youden_Thresh, Truth_Class))
+  
+  FPR_CM_Stat_Youd=binary_class_cm(Preds_Youden$Youden_Thresh, Preds_Youden$Truth_Class)
+  FPR_CM_Stat_Youd
+  
+  FPR_CM_DAStat_Youd=data.frame(FPR_CM_Stat_Youd$record_level_cm)
+  
+##Sensitivity WD
+
+  Preds_Sens_max=cbind(data.frame(Sens_Thresh, Truth_Class))
+  
+  Sens_CM_Stat_max=binary_class_cm(Preds_Sens_max$Sens_Thresh, Preds_Sens_max$Truth_Class)
+  Sens_CM_Stat_max
+  
+  Sens_CM_DAStat_max=data.frame(Sens_CM_Stat_max$record_level_cm)
+  
+##Specificity WD
+
+  Preds_Spec_max=cbind(data.frame(Spec_Thresh, Truth_Class))
+  
+  Spec_CM_Stat_max=binary_class_cm(Preds_Spec_max$Spec_Thresh, Preds_Spec_max$Truth_Class)
+  Spec_CM_Stat_max
+  
+  Spec_CM_DAStat_max=data.frame(Spec_CM_Stat_max$record_level_cm)
+  
+
+```
+
+##### Comparison between thresholds in WD and CV #####
+```{r}
+#whole dataset
+
+ifelse(Spec_Predict$Diagnosis=="LVO" & Spec_Predict$Diagnosis!=Spec_Predict$Predicted_Class, Spec_Predict$Row, " ")
+
+ifelse(Sens_Predict$Diagnosis=="LVO" & Sens_Predict$Diagnosis!=Sens_Predict$Predicted_Class, Sens_Predict$Row, " ")
+
+ifelse(LVO_predict$Diagnosis=="LVO" & LVO_predict$Diagnosis!=LVO_predict$Predicted_Class, LVO_predict$Row, " ")
+
+Youd_inc=filter(LVO_predict, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+Sens_inc=filter(Sens_Predict, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+Spec_inc=filter(Spec_Predict, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+
+inc_lvowd=merge(Youd_inc, Sens_inc, Spec_inc, by="Row")
+join(Youd_inc, Sens_inc, Spec_inc, by="Row", type="full", match="all")
+  
+#KFOLD 
+
+ifelse(Trained_XGB_Spec$Diagnosis=="LVO" & Trained_XGB_Spec$Diagnosis!=Trained_XGB_Spec$Predicted_Class, Trained_XGB_Spec$TRow, " ")
+
+ifelse(Trained_XGB_Sens$Diagnosis=="LVO" & Trained_XGB_Sens$Diagnosis!=Trained_XGB_Sens$Predicted_Class, Trained_XGB_Sens$TRow, " ")
+
+ifelse(Trained_XGB_Preds$Diagnosis=="LVO" & Trained_XGB_Preds$Diagnosis!=Trained_XGB_Preds$Predicted_Class, Trained_XGB_Preds$TRow, " ")
+
+Youd_incLVOkf=filter(Trained_XGB_Preds, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+Sens_incLVOkf=filter(Trained_XGB_Sens, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+Spec_incLVOkf=filter(Trained_XGB_Spec, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+
+#Comparison other thresholds in this model: sens overlap: 46, 57, 108, 109, 136; spec overlap: 2, 29, 35, 46, 57, 83, 108, 109, 136, 142;
+#comparison fast model: youden overlap: 2, 29, 46, 57, 109.
+YxSpec_inc_lvo=generics::intersect(Youd_incLVOkf[,1], Spec_incLVOkf[,1])
+nrow(YxSpec_inc_lvo)   #7
+
+#comparison other thresh in this model: youden overlap: 46, 57, 108, 109, 136; spec: 46, 57, 108, 109, 136 (all sens)
+YxSens_inc_lvo=generics::intersect(Youd_incLVOkf[,1], Sens_incLVOkf[,1])
+nrow(YxSens_inc_lvo)   #5
+#comparison fast model: 46, 109
+
+SpecxSens_inc_lvo=generics::intersect(Spec_incLVOkf[,1], Sens_incLVOkf[,1])
+nrow(SpecxSens_inc_lvo)  #5
+#comparison other thresh: youden: 2, 29, 35, 46, 57, 83, 108, 109, 136, 142; sens: 46, 57, 108, 109, 136 (all)
+#overlap=match(Youd_incLVOkf$.row, Sens_incLVOkf$.row)
+#comparison fast model: 2, 29, 35, 46, 57, 70, 81, 83, 103, 108, 109, 142
+
+ysensspecinc_lvokf=intersect(YxSens_inc_lvo, YxSpec_inc_lvo)
+inclvokfintersect=intersect(ysensspecinc_lvokf, SpecxSens_inc_lvo)
+
+Youd_inc_nonLVOkf=filter(Trained_XGB_Preds, Diagnosis=="non-LVO" & Diagnosis!=Predicted_Class)
+Sens_inc_nonLVOkf=filter(Trained_XGB_Sens, Diagnosis=="non-LVO" & Diagnosis!=Predicted_Class)
+Spec_inc_nonLVOkf=filter(Trained_XGB_Spec, Diagnosis=="non-LVO" & Diagnosis!=Predicted_Class)
+
+#comparison within model: 
+YxSpec_inc_nonlvo=generics::intersect(Youd_inc_nonLVOkf[,1], Spec_inc_nonLVOkf[,1])
+nrow(YxSpec_inc_nonlvo) # 26
+#model overlap: 4, 8, 10, 15, 22, 25, 34, 54, 66, 78, 100, 105, 114, , 122, 128, 134, 146    
+
+#comparison within model: 
+YxSens_inc_nonlvo=generics::intersect(Youd_inc_nonLVOkf[,1], Sens_inc_nonLVOkf[,1])
+nrow(YxSens_inc_nonlvo) #40
+#model overlap: 4, 8, 9,10, 13, 15, 19, 22, 25, 27, 31, 34, 37, 41, 50, 54, 56, 66, 73, 75, 76, 78, 82, 86, 95, 100, 101, 102, 105, 114, 115, 122, 128, 129, 134, 135, 137, 138, 146, 153
+
+#comparison within model: 
+SpecxSens_inc_nonlvo=generics::intersect(Spec_inc_nonLVOkf[,1], Sens_inc_nonLVOkf[,1])
+nrow(SpecxSens_inc_nonlvo) # 26
+#model overlap: 4, 8, 10, 15, 22, 25, 34, 54, 66, 78, 100, 105, 114, 122, 128, 134, 146 
+
+ysensspecincnonlvokf=intersect(YxSens_inc_nonlvo, YxSpec_inc_nonlvo)
+incnonlvokfintersect=intersect(ysensspecincnonlvokf, SpecxSens_inc_nonlvo)
+
+Youd_corr_LVOkf=filter(Trained_XGB_Preds, Diagnosis=="LVO" & Diagnosis==Predicted_Class)
+Sens_corr_LVOkf=filter(Trained_XGB_Sens, Diagnosis=="LVO" & Diagnosis==Predicted_Class)
+Spec_corr_LVOkf=filter(Trained_XGB_Spec, Diagnosis=="LVO" & Diagnosis==Predicted_Class)
+#comparison within model: 
+YxSpec_corr_lvo=generics::intersect(Youd_corr_LVOkf[,1], Spec_corr_LVOkf[,1])
+nrow(YxSpec_corr_lvo)#11
+#model overlap: 18, 39, 43, 62, 70,72,79,81, 84, 85, 91, 119, 126  (13)
+
+#comparison within model: 
+YxSens_corr_lvo=generics::intersect(Youd_corr_LVOkf[,1], Sens_corr_LVOkf[,1])
+nrow(YxSens_corr_lvo) #15
+#model overlap: 18, 29, 35, 39, 43, 62, 70, 72, 79, 81, 83, 84, 85, 91, 119, 126, 142 (17)
+
+#comparison within model: 
+SpecxSens_corr_lvo=generics::intersect(Spec_corr_LVOkf[,1], Sens_corr_LVOkf[,1])
+nrow(SpecxSens_corr_lvo) #11
+#model overlap: 43, 72, 79, 84, 85, 91, 119, 126 (8)
+
+ysensspeccorrlvokf=intersect(YxSens_corr_lvo, YxSpec_corr_lvo)
+corrlvokfintersect=intersect(ysensspeccorrlvokf, SpecxSens_corr_lvo)
+
+
+Youd_corr_nonLVOkf=filter(Trained_XGB_Preds, Diagnosis=="non-LVO" & Diagnosis==Predicted_Class)
+Sens_corr_nonLVOkf=filter(Trained_XGB_Sens, Diagnosis=="non-LVO" & Diagnosis==Predicted_Class)
+Spec_corr_nonLVOkf=filter(Trained_XGB_Spec, Diagnosis=="non-LVO" & Diagnosis==Predicted_Class)
+
+#comparison within model: 
+YxSpec_corr_nonlvo=generics::intersect(Youd_corr_nonLVOkf[,1], Spec_corr_nonLVOkf[,1])
+nrow(YxSpec_corr_nonlvo) #101
+#model overlap:
+
+#comparison within model: 
+YxSens_corr_nonlvo=generics::intersect(Youd_corr_nonLVOkf[,1], Sens_corr_nonLVOkf[,1])
+nrow(YxSens_corr_nonlvo) # 52
+#model overlap:
+
+#comparison within model: 
+SpecxSens_corr_nonlvo=generics::intersect(Spec_corr_nonLVOkf[,1], Sens_corr_nonLVOkf[,1])
+nrow(SpecxSens_corr_nonlvo) #52
+#model overlap:
+
+ysensspeccornonlvokf=intersect(YxSens_corr_nonlvo, YxSpec_corr_nonlvo)
+cornonlvokfintersect=intersect(ysensspeccornonlvokf, SpecxSens_corr_nonlvo)
+
+###Whole Dataset Versions 
+Youd_inc=filter(LVO_predict, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+Sens_inc=filter(Sens_Predict, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+Spec_inc=filter(Spec_Predict, Diagnosis=="LVO" & Diagnosis!=Predicted_Class)
+
+YxSpec_inclvo=tibble(generics::intersect(Youd_inc[,1], Spec_inc[,1]))
+nrow(YxSpec_inclvo) #4
+#note: <5 doesn't make a tibble, just a list 
+
+YxSens_inclvo=tibble(generics::intersect(Youd_inc[,1], Sens_inc[,1]))
+nrow(YxSens_inclvo)#
+
+interspecyoudwdinclvo=intersect(Sens_inc, Youd_inc)
+
+SpecxSens_inclvo=tibble(generics::intersect(Spec_inc[,1], Sens_inc[,1]))
+nrow(SpecxSens_inclvo)
+wdinterinclvo=data.frame(intersect(Spec_inc, interspecyoudwdinclvo))  # same 20 all??? 
+wdinterinclvo$.row=wdinterinclvo$Row  
+wdinterinclvo=select(wdinterinclvo, .row)
+compkfwdinclvo=intersect(inclvokfintersect, wdinterinclvo)
+compkfwdinclvo
+
+#Correct LVO 
+Youd_cor=filter(LVO_predict, Diagnosis=="LVO" & Diagnosis==Predicted_Class)
+Spec_cor=filter(Spec_Predict, Diagnosis=="LVO" & Diagnosis==Predicted_Class)
+Sens_cor=filter(Sens_Predict, Diagnosis=="LVO" & Diagnosis==Predicted_Class)
+
+YxSpec_corrlvo=tibble(generics::intersect(Youd_cor[,1], Spec_cor[,1]))
+nrow(YxSpec_corrlvo) #3
+#note: <5 doesn't make a tibble, just a list 
+
+YxSens_corrlvo=tibble(generics::intersect(Youd_cor[,1], Sens_cor[,1]))
+nrow(YxSens_corrlvo)
+
+SpecxSens_corrlvo=tibble(generics::intersect(Spec_cor[,1], Sens_cor[,1]))
+nrow(SpecxSens_corrlvo)#
+
+interspecyoudwdcorrlvo=intersect(Spec_cor, Youd_cor)
+
+wdintercorrlvo=data.frame(intersect(Sens_cor, interspecyoudwdcorrlvo))  # same 20 all??? 
+wdintercorrlvo$.row=wdintercorrlvo$Row  
+wdintercorrlvo=select(wdintercorrlvo, .row)
+compkfwdcorrlvo=intersect(corrlvokfintersect, wdintercorrlvo)
+compkfwdcorrlvo
+
+###WD incorrect nonLVO
+Youd_incnon=filter(LVO_predict, Diagnosis=="non-LVO" & Diagnosis!=Predicted_Class)
+Sens_incnon=filter(Sens_Predict, Diagnosis=="non-LVO" & Diagnosis!=Predicted_Class)
+Spec_incnon=filter(Spec_Predict, Diagnosis=="non-LVO" & Diagnosis!=Predicted_Class)
+
+YxSpec_incnonlvo=tibble(generics::intersect(Youd_incnon[,1], Spec_incnon[,1]))
+nrow(YxSpec_incnonlvo) #15
+#note: <5 doesn't make a tibble, just a list 
+
+YxSens_incnonlvo=tibble(generics::intersect(Youd_incnon[,1], Sens_incnon[,1]))
+nrow(YxSens_incnonlvo) #15 (all of youden)
+
+SpecxSens_incnonlvo=tibble(generics::intersect(Spec_incnon[,1], Sens_incnon[,1]))
+nrow(SpecxSens_incnonlvo)   #22
+
+interspecyoudwdincnonlvo=intersect(Spec_incnon, Youd_incnon)
+
+wdinterincnonlvo=data.frame(intersect(Sens_incnon, interspecyoudwdincnonlvo))  # same 20 all??? 
+wdinterincnonlvo$.row=wdinterincnonlvo$Row  
+wdinterincnonlvo=select(wdinterincnonlvo, .row)
+compkfwdincnonlvo=intersect(incnonlvokfintersect, wdinterincnonlvo)
+compkfwdincnonlvo
+#want incorrect non-LVO????? correct LVO? 
+
+###WD correct nonLVO
+Youd_cornon=filter(LVO_predict, Diagnosis=="non-LVO" & Diagnosis==Predicted_Class)
+Sens_cornon=filter(Sens_Predict, Diagnosis=="non-LVO" & Diagnosis==Predicted_Class)
+Spec_cornon=filter(Spec_Predict, Diagnosis=="non-LVO" & Diagnosis==Predicted_Class)
+
+YxSpec_cornonlvo=tibble(generics::intersect(Youd_cornon[,1], Spec_cornon[,1]))
+nrow(YxSpec_cornonlvo) #7
+#note: <5 doesn't make a tibble, just a list 
+
+YxSens_cornonlvo=tibble(generics::intersect(Youd_cornon[,1], Sens_cornon[,1]))
+nrow(YxSens_cornonlvo) #9 (
+
+SpecxSens_cornonlvo=tibble(generics::intersect(Spec_cornon[,1], Sens_cornon[,1]))
+nrow(SpecxSens_cornonlvo)   #7
+
+interspecyoudwdcornonlvo=intersect(Spec_cornon, Youd_cornon)
+
+wdintercornonlvo=data.frame(intersect(Sens_cornon, interspecyoudwdcornonlvo))  # same 20 all??? 
+wdintercornonlvo$.row=wdintercornonlvo$Row  
+wdintercornonlvo=select(wdintercornonlvo, .row)
+compkfwdcornonlvo=intersect(cornonlvokfintersect, wdintercornonlvo)
+compkfwdcornonlvo
+```
+
+#####Diagnostic accuracy statistics to tabulate#####
+```{r}
+
+AUC=data.frame(Res_AUC_LVO)
+
+
+OG_names=c("threshold", "tn", "tp", "fn", "fp", "sensitivity",
+            "specificity", "accuracy", "tpr", "tnr", "fnr", "fpr",
+           "npv", "ppv", "youden", "closest.topleft", "Kappa", "AccuracyLower", "AccuracyUpper", "AccuracyNull",
+           "AccuracyPValue", "McnemarPValue", "Precision","Recall", "F1", "Prevalence", "Detection.Rate", 
+           "Detection.Prevalence", "Balanced.Accuracy")
+New_names=c("Threshold", "True Negative", "True Positive", "False Negative", 
+            "False Positive", "Sensitivity", "Specificity", "Accuracy", "True Positive Rate",
+            "True Negative Rate", "False Negative Rate", "False Positive Rate", "Negative Predictive Value",
+            "Positive Predictive Value", "Youden's Index", "Closest Top Left", "Cohen's Kappa", 
+            "Accuracy Lower 95%CI", "Accuracy Upper 95%CI", "Null Accuracy", "Accuracy vs NIR p-value", "McNemar's p-value", "Precision",
+           "Recall", "F-score", "Prevalence", "Detection Rate", "Detection Prevalence", "Balanced Accuracy")
+
+######Table of Diagnostic accuracy Statistics##########
+
+####Make dataframe for prediction and add AUC
+
+#Youden
+XGB_DA_Stats=pROC::coords(Res_ROC_LVO, "best", ret="all")
+
+XGB_Stats_Youden=pROC::coords(Res_ROC_LVO, Best_threshkf[1,1], ret=c("threshold", "tn", "tp", "fn", "fp", "sensitivity",
+                                                        "specificity", "accuracy", "tpr", "tnr", "fnr", "fpr",
+                                                        "npv", "ppv", "youden", "closest.topleft"))
+
+XGB_DA_Stats_Youd=bind_cols(Res_AUC_LVO, XGB_Stats_Youden)
+colnames(XGB_DA_Stats_Youd)[1]="AUC"
+
+
+##.5 threshold
+XGB_Stats_def=pROC::coords(Res_ROC_LVO, 0.5, ret=c("threshold", "tn", "tp", "fn", "fp", "sensitivity",
+                                                         "specificity", "accuracy", "tpr", "tnr", "fnr", "fpr",
+                                                         "npv", "ppv", "youden", "closest.topleft"))
+XGB_DA_Stats_def=bind_cols(Res_AUC_LVO, XGB_Stats_def)
+colnames(XGB_DA_Stats_def)[1]="AUC"
+
+
+##.8 Sens threshold
+XGB_Stats_Sens=pROC::coords(Res_ROC_LVO, Sens_threshkf[1,1], ret=c("threshold", "tn", "tp", "fn", "fp", "sensitivity",
+                                                     "specificity", "accuracy", "tpr", "tnr", "fnr", "fpr",
+                                                     "npv", "ppv", "youden", "closest.topleft"))
+XGB_DA_Stats_Sens=bind_cols(Res_AUC_LVO, XGB_Stats_Sens)
+colnames(XGB_DA_Stats_Sens)[1]="AUC"
+
+
+##.8 Spec threshold
+XGB_Stats_Spec=pROC::coords(Res_ROC_LVO, Spec_threshkf[1,1], ret=c("threshold", "tn", "tp", "fn", "fp", "sensitivity",
+                                                     "specificity", "accuracy", "tpr", "tnr", "fnr", "fpr",
+                                                     "npv", "ppv", "youden", "closest.topleft"))
+XGB_DA_Stats_Spec=bind_cols(Res_AUC_LVO, XGB_Stats_Spec)
+colnames(XGB_DA_Stats_Spec)[1]="AUC"
+
+
+###.5 (default) rename
+XGB_Stats_def=XGB_Stats_def%>%
+  rename_with(~New_names[which(OG_names==.x)],.cols=OG_names)
+XGB_Stats_def
+XGB_Stats_defL=XGB_Stats_def%>%
+  pivot_longer(cols = everything())
+
+
+###.sens rename
+
+Sens_CM_DAStat_maxkf=Sens_CM_DAStat_maxkf%>%
+  select(-Sensitivity, -Specificity, -Accuracy, -Pos.Pred.Value, -Neg.Pred.Value, -Pred_LVO_Ref_LVO, -Pred_non.LVO_Ref_LVO,	-Pred_LVO_Ref_non.LVO,	-Pred_non.LVO_Ref_non.LVO, -cm_ts)
+
+XGB_DA_Stats_Sens=bind_cols(XGB_DA_Stats_Sens, Sens_CM_DAStat_maxkf)
+
+XGB_DA_Stats_Sens=XGB_DA_Stats_Sens%>%
+  rename_with(~New_names[which(OG_names==.x)],.cols=OG_names)
+XGB_DA_Stats_Sens
+XGB_DA_Stats_SensL=XGB_DA_Stats_Sens%>%
+  pivot_longer(cols = everything())
+
+###.spec rename
+Spec_CM_DAStat_maxkf=Spec_CM_DAStat_maxkf%>%
+  select(-Sensitivity, -Specificity, -Accuracy, -Pos.Pred.Value, -Neg.Pred.Value, -Pred_LVO_Ref_LVO, -Pred_non.LVO_Ref_LVO,	-Pred_LVO_Ref_non.LVO,	-Pred_non.LVO_Ref_non.LVO, -cm_ts)
+
+XGB_DA_Stats_Spec=bind_cols(XGB_DA_Stats_Spec, Spec_CM_DAStat_maxkf)
+
+XGB_DA_Stats_Spec=XGB_DA_Stats_Spec%>%
+  rename_with(~New_names[which(OG_names==.x)],.cols=OG_names)
+XGB_DA_Stats_Spec
+XGB_DA_Stats_SpecL=XGB_DA_Stats_Spec%>%
+  pivot_longer(cols = everything())
+
+##Youdens rename
+FPR_CM_DAStat_Youdkf=FPR_CM_DAStat_Youdkf%>%
+  select(-Sensitivity, -Specificity, -Accuracy, -Pos.Pred.Value, -Neg.Pred.Value, -Pred_LVO_Ref_LVO, -Pred_non.LVO_Ref_LVO,	-Pred_LVO_Ref_non.LVO,	-Pred_non.LVO_Ref_non.LVO, -cm_ts)
+
+XGB_DA_Stats_Youd=bind_cols(XGB_DA_Stats_Youd, FPR_CM_DAStat_Youdkf)
+
+XGB_DA_Stats_Youd=XGB_DA_Stats_Youd%>%
+  rename_with(~New_names[which(OG_names==.x)],.cols=OG_names)
+XGB_DA_Stats_Youd
+XGB_DA_Stats_YoudL=XGB_DA_Stats_Youd%>%
+  pivot_longer(cols = everything())
+
+######Table of Diagnostic accuracy Statistics##########
+
+##.5
+DA_Stats_gt_def=gt(XGB_Stats_defL)%>%
+  cols_label(name="Statistic",
+             value="Value")%>%
+  fmt_number(columns=everything(),
+             drop_trailing_zeros = TRUE,
+             decimals=3)%>%
+  tab_header("Diagnostic accuracy Statistics for threshold = .5 (probability >50% = Mimic)")%>%
+  tab_style(style=list(cell_text(weight="bold")), locations=cells_title())
+DA_Stats_gt_def
+
+##.Sensitivity
+DA_Stats_gt_sens=gt(XGB_DA_Stats_SensL)%>%
+  cols_label(name="Statistic",
+             value="Value")%>%
+  fmt_number(columns=everything(),
+             drop_trailing_zeros = TRUE,
+             decimals=3)%>%
+  tab_header(paste0("Diagnostic accuracy Statistics for threshold = %0.2f (probability >%2.0f%% = Mimic)", Sens_thresh, Sens_thresh*100))%>%
+  tab_style(style=list(cell_text(weight="bold")), locations=cells_title())
+DA_Stats_gt_sens
+
+##.Specificity
+DA_Stats_gt_spec=gt(XGB_DA_Stats_SpecL)%>%
+  cols_label(name="Statistic",
+             value="Value")%>%
+  fmt_number(columns=everything(),
+             drop_trailing_zeros = TRUE,
+             decimals=3)%>%
+  tab_header(paste0("Diagnostic accuracy Statistics for threshold = %0.2f (probability >%2.0f%% = Mimic)", Spec_thresh, Spec_thresh*100))%>%
+  tab_style(style=list(cell_text(weight="bold")), locations=cells_title())
+DA_Stats_gt_spec
+
+##Youdens
+DA_Stats_gt_Youd=gt(XGB_DA_Stats_YoudL)%>%
+  cols_label(name="Statistic",
+             value="Value")%>%
+  fmt_number(columns=everything(),
+             drop_trailing_zeros = TRUE,
+             decimals=3)%>%
+tab_header(paste0("Diagnostic accuracy Statistics for threshold = %0.2f (probability >%2.0f%% = Mimic)", Best_thresh, Best_thresh*100))%>%
+  tab_style(style=list(cell_text(weight="bold")), locations=cells_title())
+DA_Stats_gt_Youd
+
+##Merged thresholds
+
+All_Thresh=bind_rows(XGB_DA_Stats_Youd, XGB_DA_Stats_Spec, XGB_DA_Stats_Sens)
+
+All_Threshnoauc=All_Thresh%>%
+  select(-"AUC")
+
+All_ThreshL=pivot_longer(All_Threshnoauc, cols=c("True Negative":"Balanced Accuracy"), names_to="names", values_to="value")
+
+All_ThreshL=All_ThreshL%>%
+  mutate(Threshold=round(Threshold, 3))
+
+All_ThreshL$value=ifelse(All_ThreshL$names=="Youden's Index", All_ThreshL$value-1, All_ThreshL$value)
+
+All_ThreshL$value=ifelse(All_ThreshL$names=="True Positive"| All_ThreshL$names=="True Negative"| All_ThreshL$names=="False Positive" |All_ThreshL$names=="False Negative", sprintf("%s (%.2s%%)",All_ThreshL$value, round((All_ThreshL$value/1151)*100,0)), round(All_ThreshL$value, 2))
+
+All_ThreshW=pivot_wider(All_ThreshL, names_from = Threshold, values_from=value)
+  colnames(All_ThreshW)[1]="Statistic"
+
+All_ThreshGTL=gt(All_ThreshW)%>%
+  fmt_number(columns=everything(),
+             drop_trailing_zeros = TRUE,
+             decimals=2)%>%
+  tab_header(title=md(sprintf("**Diagnostic accuracy Statistics for Various Thresholds, AUC=%s**", round(All_Thresh$AUC[1], 3))))%>%
+  tab_spanner(label=md("**Youden's Best**"), columns=as.character(round(Best_threshkf, 3)))%>%
+ tab_spanner(label=md("**80% Specificity**"), columns=as.character(round(Spec_threshkf, 3)))%>%
+tab_spanner(label=md("**80% Sensitivity**"), columns=as.character(round(Sens_threshkf, 3)))%>%
+    tab_spanner(label=md("**Thresholds**"), columns=everything())
+All_ThreshGTL
+
+gtsave(All_ThreshGTL, filename="DA Stats all Thresholds.docx", #path="H:/Documents/PhD/1. Retrospective Study (Machine Learning)/Analysis/XGB Results/Complete Cases Analysis/DA Statistics")
+
+```
+
+##### Plot Predictions #####
+```{r}
+
+###Whole dataset predictions###
+
+#Predicted class for each threshold WD
+
+LVO_predict$Predicted_Class=ifelse(LVO_predict$LVO_Prediction<Best_thresh[1,1], "non-LVO", "LVO")
+
+Sens_Predict=LVO_predict
+Sens_Predict$Predicted_Class=ifelse(Sens_Predict$LVO_Prediction<Sens_thresh[1,1], "non-LVO", "LVO")
+
+Spec_Predict=LVO_predict
+Spec_Predict$Predicted_Class=ifelse(Spec_Predict$LVO_Prediction<Spec_thresh[1,1], "non-LVO", "LVO")
+
+#Probability plots WD
+
+#Youden WD
+Pred_TLVO_Plot=ggplot(LVO_predict, aes(x=LVO_Prediction, y=non_LVO_Prediction, color=Diagnosis, fill=Predicted_Class))+
+  geom_point(shape=21, size=3, stroke=3)+
+    geom_vline(xintercept=Best_thresh$threshold)+
+  labs(title="LVO versus non-LVO Classification accuracy
+(Youden's Best Predictions on whole dataset)", x="Probability of LVO", y="Probability of non-LVO")+
+    scale_color_manual(values=c("#FD0113", "#2717F5"), name="Diagnosis")+
+  scale_fill_manual(values=c("#FD0113", "#2717F5"), name=sprintf("Predicted Class
+(threshold %s)", round(Best_thresh[1,1], 3)))+
+  theme_light()+
+    theme(plot.title=element_text(face="bold", hjust=.5, size=18),
+           axis.title.x = element_text(face="bold", size=18),
+           axis.title.y = element_text(face="bold", size=18),
+           axis.text = element_text(face="bold", size=18),
+           legend.title = element_text(face="bold", size=18),
+           legend.text = element_text(face="bold", size=18))
+Pred_TLVO_Plot
+
+
+ggsave(plot=Pred_TLVO_Plot, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Predictions", filename="Whole Dataset Predictions for 100lh .png", height=8, width=15)
+
+#80% sensitivity WD
+Pred_TLVO_Plot_Sens=ggplot(Sens_Predict, aes(x=LVO_Prediction, y=non_LVO_Prediction,  fill=Predicted_Class, color=Diagnosis))+
+  geom_point(shape=21, size=3, stroke=3)+
+  geom_vline(xintercept=Sens_thresh$threshold)+
+  labs(title="LVO versus non-LVO Classification accuracy 
+(80% Sensitivity Predictions on whole dataset)", x="Probability of LVO", y="Probability of non-LVO")+
+  scale_color_manual(values=c("#FD0113", "#2717F5"), name="Diagnosis")+
+     scale_fill_manual(values=c("#FD0113", "#2717F5"), name=sprintf("Predicted Class
+(threshold %s)", round(Sens_thresh[1,1],3)))+
+  guides(color=guide_legend(order=1),
+          fill=guide_legend(order=2))+
+  theme_light()+
+    theme(plot.title=element_text(face="bold", hjust=.5, size=18),
+           axis.title.x = element_text(face="bold", size=18),
+           axis.title.y = element_text(face="bold", size=18),
+           axis.text = element_text(face="bold", size=18),
+           legend.title = element_text(face="bold", size=18),
+           legend.text = element_text(face="bold", size=18))
+Pred_TLVO_Plot_Sens
+
+
+ggsave(plot=Pred_TLVO_Plot_Sens, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Predictions", filename="Whole Dataset Predictions for sens .png", height=8, width=15)
+
+#80% Specificity WD
+Pred_TLVO_Plot_Spec=ggplot(Spec_Predict, aes(x=LVO_Prediction, y=non_LVO_Prediction, color=Diagnosis, fill=Predicted_Class))+
+  geom_point(shape=21, size=3, stroke=3)+
+    geom_vline(xintercept=Spec_thresh$threshold)+
+  labs(title="LVO versus non-LVO Classification accuracy
+80% Specificity Predictions on whole dataset)", x="Probability of LVO", y="Probability of non-LVO")+
+    scale_color_manual(values=c("#FD0113", "#2717F5"), name="Diagnosis")+
+  scale_fill_manual(values=c("#FD0113", "#2717F5"), name=sprintf("Predicted Class
+(threshold %s)", round(Spec_thresh[1,1], 3)))+
+     guides(color=guide_legend(order=1),
+      fill=guide_legend(order=2))+
+  theme_light()+
+    theme(plot.title=element_text(face="bold", hjust=.5, size=18),
+           axis.title.x = element_text(face="bold", size=18),
+           axis.title.y = element_text(face="bold", size=18),
+           axis.text = element_text(face="bold", size=18),
+           legend.title = element_text(face="bold", size=18),
+           legend.text = element_text(face="bold", size=18))
+Pred_TLVO_Plot_Spec
+
+
+ggsave(plot=Pred_TLVO_spec, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Predictions", filename="Whole Dataset Predictions for spec .png", height=8, width=15)
+
+#Facet the plots for WD
+Preds_facet=gridExtra::grid.arrange(Pred_TLVO_Plot, Pred_TLVO_Plot_Spec, Pred_TLVO_Plot_Sens, nrow=2)
+Preds_facet
+
+ggsave(plot=Preds_facet, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Predictions", filename=" Facet Predictions.png", height=10, width=16)
+
+###Cross Validated/KF predictions###
+
+#Predicted class for each threshold 
+
+#Youden
+Trained_XGB_Preds$non_LVO_Prediction=Trained_XGB_Preds$`.pred_non_LVO`
+Trained_XGB_Preds$LVO_Prediction=Trained_XGB_Preds$.pred_LVO
+Trained_XGB_Preds$Predicted_Class=ifelse(Trained_XGB_Preds$LVO_Prediction<Best_threshkf[1,1], "non-LVO", "LVO")
+
+#80% Sensitivity
+Trained_XGB_Preds$non_LVO_Prediction=Trained_XGB_Preds$`.pred_non_LVO`
+Trained_XGB_Preds$LVO_Prediction=Trained_XGB_Preds$.pred_LVO
+Trained_XGB_Sens=Trained_XGB_Preds
+Trained_XGB_Sens$Predicted_Class=ifelse(Trained_XGB_Sens$LVO_Prediction<Sens_threshkf[1,1], "non-LVO", "LVO")
+
+#80% Specificity
+Trained_XGB_Preds$non_LVO_Prediction=Trained_XGB_Preds$`.pred_non_LVO`
+Trained_XGB_Preds$LVO_Prediction=Trained_XGB_Preds$.pred_LVO
+Trained_XGB_Spec=Trained_XGB_Preds
+Trained_XGB_Spec$Predicted_Class=ifelse(Trained_XGB_Spec$LVO_Prediction<Spec_threshkf[1,1], "non-LVO", "LVO")
+
+#Probability plots
+
+# Youden
+Pred_WLVO_Plot=ggplot(Trained_XGB_Preds, aes(x=LVO_Prediction, y=non_LVO_Prediction, color=Diagnosis, fill=Predicted_Class))+
+     geom_point(shape=21, size=3, stroke=3)+
+    geom_vline(xintercept=Best_threshkf$threshold)+
+     labs(title="LVO versus non-LVO Classification accuracy
+(Youden's Best Cross Validated)", x="Probability of LVO", y="Probability of non-LVO")+
+     scale_color_manual(values=c("#FD0113", "#2717F5"), name="Diagnosis")+
+     scale_fill_manual(values=c("#FD0113", "#2717F5"), name=sprintf("Predicted Class
+(threshold %s)", round(Best_threshkf[1,1], 3)))+
+     theme_light()+
+       theme(plot.title=element_text(face="bold", hjust=.5, size=18),
+           axis.title.x = element_text(face="bold", size=18),
+           axis.title.y = element_text(face="bold", size=18),
+           axis.text = element_text(face="bold", size=18),
+           legend.title = element_text(face="bold", size=18),
+           legend.text = element_text(face="bold", size=18))
+Pred_WLVO_Plot
+
+
+ggsave(plot=Pred_WLVO_Plot, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Predictions", filename="CV Predictions for Best 100 lh.png", height=8, width=15)
+
+#80% Sensitivity
+Pred_WLVO_Plot_Sens=ggplot(Trained_XGB_Sens, aes(x=LVO_Prediction, y=non_LVO_Prediction, color=Diagnosis, fill=Predicted_Class))+
+     geom_point(shape=21, size=3, stroke=3)+
+    geom_vline(xintercept=Sens_threshkf$threshold)+
+     labs(title="LVO versus non-LVO Classification accuracy
+(80% Sensitivity Cross Validated)", x="Probability of LVO", y="Probability of non-LVO")+
+     scale_color_manual(values=c("#FD0113", "#2717F5"), name="Diagnosis")+
+     scale_fill_manual(values=c("#FD0113", "#2717F5"), name=sprintf("Predicted Class
+(threshold %s)", round(Sens_threshkf[1,1], 3)))+
+     theme_light()+
+       theme(plot.title=element_text(face="bold", hjust=.5, size=18),
+           axis.title.x = element_text(face="bold", size=18),
+           axis.title.y = element_text(face="bold", size=18),
+           axis.text = element_text(face="bold", size=18),
+           legend.title = element_text(face="bold", size=18),
+           legend.text = element_text(face="bold", size=18))
+Pred_WLVO_Plot_Sens
+
+
+ggsave(plot=Pred_WLVO_sens, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Predictions", filename="CV Predictions for sens 100 lh.png", height=8, width=15)
+
+#80% Specificity
+Pred_WLVO_Plot_Spec=ggplot(Trained_XGB_Spec, aes(x=LVO_Prediction, y=non_LVO_Prediction, color=Diagnosis, fill=Predicted_Class))+
+     geom_point(shape=21, size=3, stroke=3)+
+    geom_vline(xintercept=Spec_threshkf$threshold)+
+     labs(title="LVO versus non-LVO Classification accuracy
+(80% Specificity Cross Validated)", x="Probability of LVO", y="Probability of non-LVO")+
+     scale_color_manual(values=c("#FD0113", "#2717F5"), name="Diagnosis")+
+     scale_fill_manual(values=c("#FD0113", "#2717F5"), name=sprintf("Predicted Class 
+(threshold %s)", round(Spec_threshkf[1,1], 3)))+
+     theme_light()+
+       theme(plot.title=element_text(face="bold", hjust=.5, size=18),
+           axis.title.x = element_text(face="bold", size=18),
+           axis.title.y = element_text(face="bold", size=18),
+           axis.text = element_text(face="bold", size=18),
+           legend.title = element_text(face="bold", size=18),
+           legend.text = element_text(face="bold", size=18))
+Pred_WLVO_Plot_Spec
+ggsave(plot=Pred_WLVO_spec, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Predictions", filename="CV Predictions for spec 100 lh.png", height=8, width=15)
+
+#Facet the plots for CV/KF
+Preds_facetkf=gridExtra::grid.arrange(Pred_WLVO_Plot, Pred_WLVO_Plot_Spec, Pred_WLVO_Plot_Sens, nrow=2)
+Preds_facetkf
+
+ggsave(plot=Preds_facetkf, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Predictions", filename=" Facet CV Predictions.png", height=10, width=16)
+
+```
+
+#Confusion Matrices
+```{r}
+###Mini confusion matrices#####
+  
+       ##sens 
+  XGB_Sens_CM_WD=Preds_Sens_max%>%
+    conf_mat(Truth_Class, Sens_Thresh)
+  XGB_Sens_CM_WD
+  
+  ##.spec
+  XGB_Spec_CM_WD=Preds_Spec_max%>%
+    conf_mat(Truth_Class, Spec_Thresh)
+  XGB_Spec_CM_WD
+  
+  ## youden
+  XGB_CM_YoudWD=Preds_Youden%>%
+    conf_mat(Truth_Class, Youden_Thresh)
+  XGB_CM_YoudWD
+  
+   ##sens kf
+  XGB_Sens_CM_TX=Preds_Sens_maxkf%>%
+    conf_mat(Truth_Classkf, Sens_Threshkf)
+  XGB_Sens_CM_TX
+  
+  ##.spec kf
+  XGB_Spec_CM_TF=Preds_Spec_maxkf%>%
+    conf_mat(Truth_Classkf, Spec_Threshkf)
+  XGB_Spec_CM_TF
+  
+  ## youden kf
+  XGB_CM_Youdkf=Preds_Youdenkf%>%
+    conf_mat(Truth_Classkf, Youden_Threshkf)
+  XGB_CM_Youdkf
+  
+  ######GGplot confusion matrices#####
+  
+#Confusion table for Sensitivity
+  TPR_Sens=XGB_Sens_CM_TX$table[1]
+  FNR_Sens=XGB_Sens_CM_TX$table[2]
+  FPR_Sens=XGB_Sens_CM_TX$table[3]
+  TNR_Sens=XGB_Sens_CM_TX$table[4]
+  
+  Truth_Class_LVO=factor(c("LVO", "LVO", "non-LVO","non-LVO"))
+  Pred_Class=factor(c("LVO", "non-LVO", "LVO", "non-LVO"))
+  Frequency_Sens=c(FNR_Sens,TPR_Sens, TNR_Sens, FPR_Sens)
+ 
+  CM_FPR_DF_Sens=data.frame(Truth_Class_LVO, Pred_Class, Frequency_Sens)
+  
+ #had to label the wrong way round to make it display correctly in the plot 
+     Correct_sens=ifelse(CM_FPR_DF_Sens$Truth_Class_LVO!=CM_FPR_DF_Sens$Pred_Class, "Correct", "Incorrect")
+     
+  #Confusion matrix for .8 sens
+  Conf_Mat_FPR_Sens=ggplot(CM_FPR_DF_Sens, aes(x=Truth_Class_LVO, y=Pred_Class))+
+    geom_tile(aes(fill=Correct_sens), colour="white")+
+    geom_text(aes(label=sprintf("%1.0f", Frequency_Sens)), vjust=1, color="White", fontface="bold", size=12)+
+    scale_x_discrete(position="top")+
+    scale_y_discrete(labels=c("non-LVO", "LVO"))+
+    scale_fill_manual(values=c(Incorrect="#EC008C",Correct="#80BC00"), name="Classification")+
+    labs(x="True Class", y="Predicted Class",
+         title=sprintf("Evaluation matrix depicting the accuracy of LVO versus non-LVO
+    classification (80%% Sensitivity Threshold >%s = LVO)", round(Sens_threshkf, 3)))+
+    theme_light()+
+    theme(legend.text = element_text(face ="bold", size=14),
+          legend.title = element_text(face="bold", size=14),
+          plot.title = element_text(face="bold", size=14, hjust=0.5),
+          axis.text = element_text(face="bold", size=14),
+          axis.title = element_text(face="bold", size=14)
+          )
+  Conf_Mat_FPR_Sens
+  
+   ggsave(plot=Conf_Mat_FPR_Sens, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/CMs", filename = "Sensitivity .8 CM 100lh.png", height=5, width=6.5)
+
+  
+#Confusion table for Specificity
+  TPR_Spec=XGB_Spec_CM_TF$table[1]
+  FNR_Spec=XGB_Spec_CM_TF$table[2]
+  FPR_Spec=XGB_Spec_CM_TF$table[3]
+  TNR_Spec=XGB_Spec_CM_TF$table[4]
+  
+  Truth_Class_LVO=factor(c("LVO", "LVO", "non-LVO","non-LVO"))
+  Pred_Class=factor(c("LVO", "non-LVO", "LVO", "non-LVO"))
+  Frequency_Spec=c(FNR_Spec,TPR_Spec, TNR_Spec, FPR_Spec)
+  
+  CM_FPR_DF_Spec=data.frame(Truth_Class_LVO, Pred_Class, Frequency_Spec)
+  
+   Correct_spec=ifelse(CM_FPR_DF_Spec$Truth_Class_LVO!=CM_FPR_DF_Spec$Pred_Class, "Correct", "Incorrect")
+  
+  #Confusion matrix for .8 Spec
+  Conf_Mat_FPR_Spec=ggplot(CM_FPR_DF_Spec, aes(x=Truth_Class_LVO, y=Pred_Class))+
+    geom_tile(aes(fill=Correct_spec), colour="white")+
+    geom_text(aes(label=sprintf("%1.0f", Frequency_Spec)), vjust=1, color="White", fontface="bold", size=12)+
+    scale_x_discrete(position="top")+
+    scale_y_discrete(labels=c("non-LVO", "LVO"))+
+    scale_fill_manual(values=c(Incorrect="#EC008C",Correct="#80BC00"), name="Classification")+
+    labs(x="True Class", y="Predicted Class",
+         title=sprintf("Evaluation matrix depicting the accuracy of LVO versus non-LVO 
+    classification (80%% Specificity Threshold >%s = LVO)", round(Spec_threshkf, 3)))+
+    theme_light()+
+    theme(legend.text = element_text(face ="bold", size=14),
+          legend.title = element_text(face="bold", size=14),
+          plot.title = element_text(face="bold", size=14, hjust=0.5),
+          axis.text = element_text(face="bold", size=14),
+          axis.title = element_text(face="bold", size=14)
+    )
+  Conf_Mat_FPR_Spec
+  
+  ggsave(plot=Conf_Mat_FPR_Spec, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/CMs", filename = "Specificity .8 CM.png", height=5, width=6)
+
+
+  #Confusion table for Youden
+  TPR_Youd=XGB_CM_Youdkf$table[1]
+  FNR_Youd=XGB_CM_Youdkf$table[2]
+  FPR_Youd=XGB_CM_Youdkf$table[3]
+  TNR_Youd=XGB_CM_Youdkf$table[4]
+  
+  Frequency_Youd=c(FNR_Youd, TPR_Youd, TNR_Youd, FPR_Youd)
+  
+  CM_DF_Youd=data.frame(Truth_Class_LVO, Pred_Class, Frequency_Youd)
+  
+     Correct=ifelse(CM_DF_Youd$Truth_Class_LVO!=CM_DF_Youd$Pred_Class, "Correct", "Incorrect")
+  
+  #Confusion matrix for youden
+  Conf_Mat_Youden=ggplot(CM_DF_Youd, aes(x=Truth_Class_LVO, y=Pred_Class))+
+    geom_tile(aes(fill=Correct), colour="white")+
+    geom_text(aes(label=sprintf("%1.0f", Frequency_Youd)), vjust=1, color="White", fontface="bold", size=12)+
+    scale_x_discrete(position="top")+
+    scale_y_discrete(labels=c("non-LVO", "LVO"))+
+    scale_fill_manual(values=c(Incorrect="#EC008C", Correct="#80BC00"), name="Classification")+
+    labs(x="True Class", y="Predicted Class", 
+         title=sprintf("Evaluation matrix depicting the accuracy of LVO versus non-LVO
+    classification (Youden's Best Threshold >%s = LVO)", round(Best_threshkf, 3)))+
+    theme_light()+
+    theme(legend.text = element_text(face = "bold", size=14),
+          legend.title = element_text(face="bold", size=14),
+          plot.title = element_text(face="bold", size=14, hjust=0.5),
+          axis.text = element_text(face="bold", size=14),
+          axis.title = element_text(face="bold", size=14)
+    )
+  Conf_Mat_Youden
+  
+ggsave(plot=Conf_Mat_Youden, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/CMs", filename = "Youden CM.png", height=5, width=6)
+
+    sprintf("%d/%d (%.2f%%) LVO patients were correctly classified and %d/%d (%.2f%%) non-LVO patients were incorrectly classified as LVO", TPR_Youd, TPR_Youd+FNR_Youd, TPR_Youd/(TPR_Youd+FNR_Youd)*100, FPR_Youd, FPR_Youd+TNR_Youd, FPR_Youd/(FPR_Youd+TNR_Youd)*100)
+    
+    #Facet all CM's
+  Thresh_fac=gridExtra::grid.arrange(Conf_Mat_Youden, Conf_Mat_FPR_Spec, Conf_Mat_FPR_Sens, nrow=2)
+  Thresh_fac
+  
+  ggsave(plot=Thresh_fac, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/CMs", filename = "Facet CM.png", height=10, width=14)
+
+#####WD CMs
+  #Confusion table for Sensitivity
+  TPR_SensWD=XGB_Sens_CM_WD$table[1]
+  FNR_SensWD=XGB_Sens_CM_WD$table[2]
+  FPR_SensWD=XGB_Sens_CM_WD$table[3]
+  TNR_SensWD=XGB_Sens_CM_WD$table[4]
+  
+  Truth_Class_LVO=factor(c("LVO", "LVO", "non-LVO","non-LVO"))
+  Pred_Class=factor(c("LVO", "non-LVO", "LVO", "non-LVO"))
+  Frequency_SensWD=c(FNR_SensWD,TPR_SensWD, TNR_SensWD, FPR_SensWD)
+ 
+  
+  CM_FPR_DF_SensWD=data.frame(Truth_Class_LVO, Pred_Class, Frequency_SensWD)
+  
+
+ Correct_sensWD=ifelse(CM_FPR_DF_SensWD$Truth_Class_LVO!=CM_FPR_DF_SensWD$Pred_Class, "Correct", "Incorrect")
+     
+  #Confusion matrix for .8 sens 
+  Conf_Mat_FPR_SensWD=ggplot(CM_FPR_DF_SensWD, aes(x=Truth_Class_LVO, y=Pred_Class))+
+    geom_tile(aes(fill=Correct_sensWD), colour="white")+
+    geom_text(aes(label=sprintf("%1.0f", Frequency_SensWD)), vjust=1, color="White", fontface="bold", size=12)+
+    scale_x_discrete(position="top")+
+    scale_y_discrete(labels=c("non-LVO", "LVO"))+
+    scale_fill_manual(values=c(Incorrect="#EC008C",Correct="#80BC00"), name="Classification")+
+    labs(x="True Class", y="Predicted Class",
+         title=sprintf("Evaluation matrix depicting the accuracy of LVO versus non-LVO
+    classification (80%% Sensitivity Threshold >%s = LVO)", round(Sens_thresh, 3)))+
+    theme_light()+
+    theme(legend.text = element_text(face ="bold", size=14),
+          legend.title = element_text(face="bold", size=14),
+          plot.title = element_text(face="bold", size=14, hjust=0.5),
+          axis.text = element_text(face="bold", size=14),
+          axis.title = element_text(face="bold", size=14)
+          )
+  Conf_Mat_FPR_SensWD
+  
+   ggsave(plot=Conf_Mat_FPR_SensWD, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/CMs", filename = "Sensitivity .8 CM WD 100lh.png", height=5, width=6.5)
+
+  
+   #Confusion table for Specificity
+  TPR_SpecWD=XGB_Spec_CM_WD$table[1]
+  FNR_SpecWD=XGB_Spec_CM_WD$table[2]
+  FPR_SpecWD=XGB_Spec_CM_WD$table[3]
+  TNR_SpecWD=XGB_Spec_CM_WD$table[4]
+  
+  Truth_Class_LVO=factor(c("LVO", "LVO", "non-LVO","non-LVO"))
+  Pred_Class=factor(c("LVO", "non-LVO", "LVO", "non-LVO"))
+  Frequency_SpecWD=c(FNR_SpecWD,TPR_SpecWD, TNR_SpecWD, FPR_SpecWD)
+  
+  CM_FPR_DF_SpecWD=data.frame(Truth_Class_LVO, Pred_Class, Frequency_SpecWD)
+  
+   Correct_specWD=ifelse(CM_FPR_DF_SpecWD$Truth_Class_LVO!=CM_FPR_DF_SpecWD$Pred_Class, "Correct", "Incorrect")
+  
+  #Confusion matrix for .8 Spec
+  Conf_Mat_FPR_SpecWD=ggplot(CM_FPR_DF_SpecWD, aes(x=Truth_Class_LVO, y=Pred_Class))+
+    geom_tile(aes(fill=Correct_specWD), colour="white")+
+    geom_text(aes(label=sprintf("%1.0f", Frequency_SpecWD)), vjust=1, color="White", fontface="bold", size=12)+
+    scale_x_discrete(position="top")+
+    scale_y_discrete(labels=c("non-LVO", "LVO"))+
+    scale_fill_manual(values=c(Incorrect="#EC008C",Correct="#80BC00"), name="Classification")+
+    labs(x="True Class", y="Predicted Class",
+         title=sprintf("Evaluation matrix depicting the accuracy of LVO versus non-LVO 
+    classification (80%% Specificity Threshold >%s = LVO)", round(Spec_thresh, 3)))+
+    theme_light()+
+    theme(legend.text = element_text(face ="bold", size=14),
+          legend.title = element_text(face="bold", size=14),
+          plot.title = element_text(face="bold", size=14, hjust=0.5),
+          axis.text = element_text(face="bold", size=14),
+          axis.title = element_text(face="bold", size=14)
+    )
+  Conf_Mat_FPR_SpecWD
+  
+  
+  ggsave(plot=Conf_Mat_FPR_SpecWD, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/CMs", filename = "Specificity .8 CM WD.png", height=5, width=6)
+  
+    #Confusion table for Youden
+  TPR_YoudWD=XGB_CM_YoudWD$table[1]
+  FNR_YoudWD=XGB_CM_YoudWD$table[2]
+  FPR_YoudWD=XGB_CM_YoudWD$table[3]
+  TNR_YoudWD=XGB_CM_YoudWD$table[4]
+  
+  Frequency_YoudWD=c(FNR_YoudWD, TPR_YoudWD, TNR_YoudWD, FPR_YoudWD)
+  
+  CM_DF_YoudWD=data.frame(Truth_Class_LVO, Pred_Class, Frequency_YoudWD)
+  
+     CorrectWD=ifelse(CM_DF_YoudWD$Truth_Class_LVO!=CM_DF_YoudWD$Pred_Class, "Correct", "Incorrect")
+  
+  #Confusion matrix for Youden
+  Conf_Mat_YoudenWD=ggplot(CM_DF_YoudWD, aes(x=Truth_Class_LVO, y=Pred_Class))+
+    geom_tile(aes(fill=Correct), colour="white")+
+    geom_text(aes(label=sprintf("%1.0f", Frequency_YoudWD)), vjust=1, color="White", fontface="bold", size=12)+
+    scale_x_discrete(position="top")+
+    scale_y_discrete(labels=c("non-LVO", "LVO"))+
+    scale_fill_manual(values=c(Incorrect="#EC008C", Correct="#80BC00"), name="Classification")+
+    labs(x="True Class", y="Predicted Class", 
+         title=sprintf("Evaluation matrix depicting the accuracy of LVO versus non-LVO
+    classification (Youden's Best Threshold >%s = LVO)", round(Best_thresh, 3)))+
+    theme_light()+
+    theme(legend.text = element_text(face = "bold", size=14),
+          legend.title = element_text(face="bold", size=14),
+          plot.title = element_text(face="bold", size=14, hjust=0.5),
+          axis.text = element_text(face="bold", size=14),
+          axis.title = element_text(face="bold", size=14)
+    )
+  Conf_Mat_YoudenWD
+  
+ggsave(plot=Conf_Mat_YoudenWD, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/CMs", filename = "Youden CM WD.png", height=5, width=6)
+    
+    #Facet all WD CM's
+
+  Thresh_facWD=gridExtra::grid.arrange(Conf_Mat_YoudenWD, Conf_Mat_FPR_SpecWD, Conf_Mat_FPR_SensWD, nrow=2)
+  Thresh_facWD
+  
+ggsave(plot=Thresh_facWD, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/CMs", filename = "Facet CM WD.png", height=10, width=14)
+```
+
+##### Discrepancy between correct and incorrect patients (Youden's threshold) #####
+```{r}
+
+#Prepare dataframe
+ Disc_LVOdf=bind_cols(Preds_Youdenkf, StroBEABACUS_LVO)
+  
+  Disc_LVOdf$Gender=mapvalues(Disc_LVOdf$Gender, c(1, 2), c("Male", "Female"))
+   Disc_LVOdf$Irregular_Pulse=mapvalues(Disc_LVOdf$Irregular_Pulse, c(0, 1), c("Regular", "Irregular"))
+Disc_LVOdf=Disc_LVOdf%>%
+  select_all(~gsub("_", " ",.))
+
+ Disc_LVOdf$`Alert Verbal Pain Unresponsive Scale max 3`=mapvalues(Disc_LVOdf$`Alert Verbal Pain Unresponsive Scale max 3`, c(0, 1, 2), c("0 - Alert", "1 - Verbal", "2 - Pain"))
+ 
+StroBEABACUSB_tidy$N=as.numeric(rownames(StroBEABACUSB_tidy))
+
+Disc_LVOdf$N=as.numeric(rownames(StroBEABACUS_LVO))
+ 
+Subtype=StroBEABACUSB_tidy%>%
+  select("Detailed Diagnosis", N)
+
+#Classify correct and incorrect patients according to Youden's best
+ Disc_LVOdf$"Misclassified LVO"=ifelse(Disc_LVOdf$"Youden Threshkf"=="non-LVO" & Disc_LVOdf$Diagnosis=="LVO", "Incorrect", "Correct")
+ 
+Disc_LVOMg=merge(Subtype, Disc_LVOdf, by="N")
+
+   Disc_LVOdf=filter(Disc_LVOMg, Diagnosis=="LVO")
+   
+   Disc_LVOdf=Disc_LVOdf%>%
+  select(-"Truth Class factkf",-"Youden Threshkf", -N, -Diagnosis, -"Detailed Diagnosis")
+
+   Discrep_tbl_LVO=Disc_LVOdf%>%
+  tbl_summary(by="Misclassified LVO", 
+  type=list(#'Alert Verbal Pain Unresponsive Scale max 3'~ 'continuous2',
+            'Pre Stroke Disability mRS 3 to 5'~ 'continuous2',
+                        'Temperature Degrees C'~ 'continuous2',
+                        "Age in Years"~ "continuous2",
+                        'Heart Rate BPM'~ 'continuous2',
+                        'Capillary Blood Glucose mmol L'~ 'continuous2',
+                        'Diastolic Blood Pressure mmHg'~ 'continuous2',
+                        'Systolic Blood Pressure mmHg'~ 'continuous2',
+                        'Peripheral Oxygen Saturation Percent'~ 'continuous2'),
+                        #all_continuous() ~ "continuous"),
+              statistic=list(
+                all_continuous()~c(
+                  "{min}-{max}",
+                  "{mean} ({sd})",
+                  "{median} ({p25}, {p75})"
+                ),
+               # 'Alert Verbal Pain Unresponsive Scale max 3'~ c(
+              #    "{median} ({p25}, {p75})"
+             #   ),
+                'Pre Stroke Disability mRS 3 to 5'~c(
+                  "{median} ({p25}, {p75})"
+                )
+              ),
+              digits=all_continuous() ~2,
+  )%>% 
+  add_stat_label(
+    label=list(all_continuous()~ c(
+      "Min-Max",
+      "Mean (SD)",
+      "Median (IQR)"),
+      all_categorical()~ c(
+        "N (%)"),
+     # 'Alert Verbal Pain Unresponsive Scale max 3' ~ c(
+     #   "Median (IQR)"),
+      'Pre Stroke Disability mRS 3 to 5' ~ c(
+        "Median (IQR)"))
+  )%>%
+  add_p()%>%
+  modify_caption(paste0("Diagnostic accuracy Statistics for threshold = %0.2f (probability >%2.0f%% = Mimic)", Best_threshkf, Best_threshkf*100)"**Descriptive statistics and univariate tests for correctly and incorrectly classified LVO patients (threshold .49).**")%>%
+  bold_labels()
+Discrep_tbl_LVO
+
+
+## non-LVO
+
+SubtypeMG$"Misclassified non-LVO"=ifelse(Disc_LVOdf$"Youden Threshkf"=="non-LVO" & Disc_LVOdf$Diagnosis=="LVO", "Incorrect", "Correct")
+
+Disc_LVOdfNLVO=filter(SubtypeMG, Diagnosis=="non-LVO")
+Disc_LVOdfNLVO=Disc_LVOdfNLVO%>%
+  select(-"Truth Class factkf",-"Youden Threshkf", -N, -Diagnosis, -"Misclassified LVO")
+
+
+  Discrep_tblNLVO=Disc_LVOdfNLVO%>%
+  tbl_summary(by="Misclassified non-LVO", 
+  type=list(#'Alert Verbal Pain Unresponsive Scale max 3'~ 'continuous2',
+            'Pre Stroke Disability mRS 3 to 5'~ 'continuous2',
+                        'Temperature Degrees C'~ 'continuous2',
+                        "Age in Years"~ "continuous2",
+                        'Heart Rate BPM'~ 'continuous2',
+                        'Capillary Blood Glucose mmol L'~ 'continuous2',
+                        'Diastolic Blood Pressure mmHg'~ 'continuous2',
+                        'Systolic Blood Pressure mmHg'~ 'continuous2',
+                        'Peripheral Oxygen Saturation Percent'~ 'continuous2'),
+                        #all_continuous() ~ "continuous"),
+              statistic=list(
+                all_continuous()~c(
+                  "{min}-{max}",
+                  "{mean} ({sd})",
+                  "{median} ({p25}, {p75})"
+                ),
+                #  'Alert Verbal Pain Unresponsive Scale max 3'~ c(
+                 # "{median} ({p25}, {p75})"
+               # ),
+                'Pre Stroke Disability mRS 3 to 5'~c(
+                  "{median} ({p25}, {p75})"
+                )
+              ),
+              digits=all_continuous() ~2,
+  )%>% 
+  add_stat_label(
+    label=list(all_continuous()~ c(
+      "Min-Max",
+      "Mean (SD)", 
+      "Median (IQR)"),
+      all_categorical()~ c(
+        "N (%)"),
+      #'Alert Verbal Pain Unresponsive Scale max 3' ~ c(
+       # "Median (IQR)"),
+      'Pre Stroke Disability mRS 3 to 5' ~ c(
+        "Median (IQR)"))
+  )%>%
+  add_p()%>%
+  modify_caption("**Table 1. Descriptive statistics and univariate tests for correctly and incorrectly classified non-LVO patients (threshold .49).**")%>%
+  bold_labels()
+Discrep_tblNLVO
+
+```
+
+#####AUPRC#######
+```{r}
+
+# WD PRC
+PRAUC=PRAUC(LVO_predict$LVO_Prediction, LVO_predict$Diagnosis=="LVO")
+
+LVO_AUC_PRC=evalmod(scores=LVO_predict$LVO_Prediction, labels=LVO_predict$Diagnosis=="LVO", mode="rocprc")
+LVO_AUC_PRCplt=autoplot(LVO_AUC_PRC, "PRC")+
+  #aes(size=dsid_modname)+
+    scale_color_manual(values=c("Blue"), labels="Whole Dataset PRC", name="PR Curve Dataset")+
+  theme_classic()+
+  theme(legend.position = "right",
+        axis.text = element_text(size=12),
+        axis.title = element_text(size=12),
+        legend.title =element_text(size=10, face="bold"), 
+          legend.text=element_text(size=10),
+      plot.title = element_text(face="bold", hjust=.5, size=10))+
+    ggtitle(sprintf("Precision Recall Curves for the Cross Validated (PRAUC=%s) 
+    and Whole Dataset (PRAUC=%s) Models ",round(KF_PRAUC, 4), round(PRAUC, 4)))
+LVO_AUC_PRCplt
+
+ggsave(plot=LVO_AUC_PRCplt, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/ROC", filename="PRCWD.png") 
+
+#CV/kfold PRC
+KF_PRAUC=PRAUC(Trained_XGB_Preds$LVO_Prediction, Trained_XGB_Preds$Diagnosis=="LVO")
+
+LVO_AUC_PRC_CV=evalmod(scores=Trained_XGB_Preds$LVO_Prediction, labels=Trained_XGB_Preds$Diagnosis=="LVO", mode="rocprc")
+LVO_AUC_PRCCVplt=autoplot(LVO_AUC_PRC_CV, "PRC")+
+  scale_color_manual(values=c("Red"), labels="Cross Validated PRC")+
+  theme_transparent()+
+  theme(legend.position = c(1.25,.42),
+        legend.title = element_blank(),
+      plot.title = element_blank())
+ aes(size=dsid_modname)+
+LVO_AUC_PRCCVplt
+
+ #Align CV and WD
+PRC_LVO = align_plots(LVO_AUC_PRCplt, LVO_AUC_PRCCVplt,align="hv")
+PRC_LVO=ggdraw(PRC_LVO[[1]]) + draw_plot(PRC_LVO[[2]])
+PRC_LVO
+
+ggsave(plot=PRC_LVO, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/ROC", filename="PRC.png", height=7, width=7) 
+
+LVO_AUC_PRC_df=data.frame(LVO_AUC_PRC)
+
+LVO_AUC_PRC_CVdf=data.frame(LVO_AUC_PRC_CV)
+
+#F1 Score for CV
+Trained_XGB_Preds_num=Trained_XGB_Preds
+Pred=Trained_XGB_Preds_num$LVO_Prediction
+Trained_XGB_Preds_num$Diagnosis=as.numeric(mapvalues(Trained_XGB_Preds$Diagnosis, c("non-LVO", "LVO"), c(0, 1)))
+Trained_XGB_Preds_num$Predicted_Class=as.numeric(mapvalues(Trained_XGB_Preds$Predicted_Class, c("non-LVO", "LVO"), c(0, 1)))
+F1_Score(y_pred=Trained_XGB_Preds_num$Predicted_Class,y_true=Trained_XGB_Preds_num$Diagnosis, positive = "1")
+F1_Score(y_pred=Trained_XGB_Preds_num$Predicted_Class,y_true=Trained_XGB_Preds_num$Diagnosis, positive = "1")
+
+# Matthew's correlation coefficient for CV
+ModelMetrics::mcc(actual=Trained_XGB_Preds_num$Diagnosis, predicted=Trained_XGB_Preds_num$LVO_Prediction, cutoff=Best_threshkf[1,])
+ModelMetrics::mcc(actual=Trained_XGB_Preds_num$Diagnosis, predicted=Trained_XGB_Preds_num$LVO_Prediction, cutoff=Spec_threshkf[1,])
+ModelMetrics::mcc(actual=Trained_XGB_Preds_num$Diagnosis, predicted=Trained_XGB_Preds_num$LVO_Prediction, cutoff=Sens_threshkf[1,])
+
+```
+
+#####Variable Importance Scores######
+```{r}
+
+######### Numeric Variable Importance Scores #######
+
+VIP_Num=vi(LVO_fit)
+
+#Dropped features
+  All_Features=as.data.frame(LVO_fit$feature_names)
+  colnames(All_Features)[1]="Feature"
+  Important_features=as.data.frame(VIP_Num$Variable)
+  colnames(Important_features)[1]="Feature"
+  Dropped_varsES=compare_df(Important_features, All_Features, c("Feature"))
+  Dropped_varsES=Dropped_varsES$comparison_df
+  
+  sprintf("Variable dropped from the variable importance plot: %s", Dropped_varsES$Feature)
+
+#Importance of first 3 features
+sum(VIP_Num$Importance[1:3])
+
+sprintf("%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%,%s=%s%%", VIP_Num$Variable[1], round(VIP_Num$Importance[1]*100, 0), VIP_Num$Variable[2], round(VIP_Num$Importance[2]*100, 0), VIP_Num$Variable[3], round(VIP_Num$Importance[3]*100, 0), VIP_Num$Variable[4], round(VIP_Num$Importance[4]*100, 0), VIP_Num$Variable[5], round(VIP_Num$Importance[5]*100, 0), VIP_Num$Variable[6], round(VIP_Num$Importance[6]*100, 0), VIP_Num$Variable[7], round(VIP_Num$Importance[7]*100, 0), VIP_Num$Variable[8], round(VIP_Num$Importance[8]*100, 0), VIP_Num$Variable[9], round(VIP_Num$Importance[9]*100, 0), VIP_Num$Variable[10], round(VIP_Num$Importance[10]*100, 0), VIP_Num$Variable[11], round(VIP_Num$Importance[11]*100, 0), VIP_Num$Variable[12], round(VIP_Num$Importance[12]*100, 0), VIP_Num$Variable[13], round(VIP_Num$Importance[13]*100, 0))
+
+ ###### Variable Importance Plots ########  
+  
+  ####Variable importance of all features########  
+
+    VIP_col_allLVO=VIP_Num%>%
+    mutate(name= fct_reorder(factor(gsub("_", " ", Variable)), Importance))%>% 
+    ggplot( aes(x=name, y=Importance*100, fill=name))+
+    geom_col()+
+    labs(title="Variable contribution to the LVO prediction model accuracy", y="Importance (gain %)", x="Variable")+
+        ylim(0, 55)+
+    scale_y_continuous(breaks=seq(from=0, to=55, by=5))+
+    scale_fill_manual(values=c("#0667A6", "#0653A6","#0615A6","#3406A6", "#4A05A7","#5E05A7","#6906A6","#8406A6","#A606AA","#A8049C", "#A80471", "#A90342", "#AA020E"))+
+    coord_flip()+
+    theme_light()+
+    theme(plot.title=element_text(face="bold", hjust=.5, size=14),
+          axis.title=element_text(face="bold", size=14),
+          axis.text=element_text(face="bold", size=14),
+          legend.position= "none"
+          )
+  VIP_col_allLVO
+  
+  ggsave(plot=VIP_col_allLVO, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/VIP", filename="Variable Importance Plot 100LH.png", height=8, width=11)  
+  
+```
+
+#####Feature Interactions######
+```{r}
+#Plot feature interaction plot - Gain
+XG_IntsLVOES=EIX::interactions(LVO_fit, X_train)
+FT_Ints_LVOESdf=plot(XG_IntsLVOES)
+  FT_Ints_LVOESdf=data.frame(FT_Ints_LVOESdf$data)
+  FT_Ints_LVOESdf$Parent=factor(gsub("_", " ", FT_Ints_LVOESdf$Parent))
+  FT_Ints_LVOESdf$Child=factor(gsub("_", " ", FT_Ints_LVOESdf$Child))
+FT_IntsLVOES=ggplot(FT_Ints_LVOESdf, aes(Child, Parent, fill=breaks))+
+  geom_tile(show.legend=TRUE)+
+  labs(title="Feature Interactions")+
+  scale_fill_manual(values=c("#2717F5", "#B603E7", "#E703C6", "#FD0113"), labels=c("Very Low", "Low", "Medium", "High"), name="Sum Gain", drop=FALSE)+
+  theme(axis.text.x = element_text(vjust=0.5, angle=90),
+        axis.text = element_text(color="Black"),
+        axis.title = element_text(color="Black"),
+        plot.title = element_text(color="Black", hjust=.5),
+        legend.position = "top"
+  )
+FT_IntsLVOES
+
+ggsave(plot=FT_IntsLVOES, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Interactions", filename="Sum Gain Interactons 100lh.png", height=6, width=6)
+
+```
+
+##### EIX Radar #####
+```{r}
+Radar_importance=EIX::importance(LVO_fit, X_train, option="both")
+
+Radar_var_impLVOES=EIX::importance(LVO_fit, X_train, option="variables")
+Radar_var_impLVOES
+
+Radar_plotLVOES=plot(Radar_var_impLVOES, radar=TRUE)+
+  labs(title="Radar plot depicting various measures of feature importance")+
+  theme(plot.title=element_text(size=12),
+        axis.text = element_text(size=12, face="bold"),
+        legend.text = element_text(size=12, face="bold"))
+Radar_plotLVOES
+
+ggsave(plot=Radar_plotLVOES, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/VIP", filename="VI Importance 100lh.png", height=8, width=8)
+
+Radar_int_impLVOES=EIX::importance(LVO_fit, X_train, option="interactions")
+Radar_int_impLVOES
+
+Radarint_plotLVOES=plot(Radar_int_impLVOES, radar=TRUE)+
+  labs(title="Radar plot depicting various measures of feature importance 
+       according to variable interactions")+
+  theme(plot.title=element_text(size=12),
+        axis.text = element_text(size=12, face="bold"),
+        legend.text = element_text(size=12, face="bold"))
+Radarint_plotLVOES
+
+ggsave(plot=Radarint_plotLVOES, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/VIP", filename="VI Interactons.png", height=8, width=8)
+```
+
+#####SHAP values/Tornado plots########
+```{r}
+
+#SHAP = SHapley Additive exPlanations
+
+#make recipe to select predictors and make into matrix to put into shap prep 
+DX_rec=recipe(Diagnosis~., data=StroBEABACUS_LVO)
+DX_prep=prep(DX_rec)
+DX_bake=bake(DX_prep, 
+             has_role("predictor"), 
+             new_data=NULL)
+
+X_train=bake(DX_prep, 
+            has_role("predictor"), 
+           new_data=NULL, 
+          composition="matrix")
+
+#calculate shap values for plot
+
+Shapvals=shap.prep(LVO_fit, 
+                   X_train=X_train) 
+
+#Check mean scores 
+Shap_values=shap.values(LVO_fit, X_train)
+
+Shap_values$mean_shap_score
+
+Shap_values$shap_score=Shap_values$shap_score%>%
+  select_all(~gsub("_", " ",.))
+
+##### Tornado plot/SHAP summary plot #####
+
+Shapvals$variable=fct_reorder(factor(gsub("_", " ", Shapvals$variable)), Shapvals$mean_value, .desc=TRUE)
+Shap_Plot=shap.plot.summary(Shapvals, my_format="%.4f")+
+  labs(title="SHAP summary plot depicting the magnitude and direction of feature impact on LVO prediction 
+       (positive SHAP values on X were predictive of LVO, mean feature SHAP values are displayed on Y)")+
+  scale_y_continuous(breaks=c(-1, -.5, 0, .5, 1), labels=c(-1, "- (non-LVO)", "0 (Neither)", "+ (LVO)", 1))+
+  scale_color_gradient(low="#2B1BFD", high="#FC1C21", breaks = c(0, 1), labels = c("Low/No/Male", 
+            "High/Yes/Female"))+
+  theme(plot.title=element_text(face="bold", size=8, hjust=.5),
+        axis.text.y = element_text(face="bold", size=10),
+        axis.text.x = element_text(face="bold", size=8),
+        axis.title.x = element_text(face="bold", size=8),
+        legend.text = element_text(face="bold", size=8),
+        legend.title = element_text(face="bold", size=8, vjust=.9)
+  )
+Shap_Plot
+
+ggsave(plot=Shap_Plot, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/SHAP", filename="LVO Shap Summary Plot 100lh.png", height=8, width=12)
+
+```
+
+##### SHAP Dependence #####
+```{r}
+
+#Dependence plots for top individual variables - shows shape of relationship
+
+Age_SPD=shap.plot.dependence(Shapvals, 
+                     x="Age in Years", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red")+
+  stat_cor(method="spearman", hjust=-1)+
+  labs(title="Distribution of SHAP values for Age",
+       x="Age in Years", y="SHAP value for Age in Years")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5)
+        )
+Age_SPD
+
+ggsave(plot=Age_SPD, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Dependence Plots", filename="Age DP.png")
+
+#loess for binary because not enough unique values for feature 
+
+Face_Dep=shap.plot.dependence(Shapvals, 
+                             x="FAST Facial Weakness", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red", method="loess")+
+  stat_cor(method="spearman", hjust=-1)+
+  scale_x_continuous(breaks=c(1, 2), label=c("No", "Yes"))+
+  labs(title="Distribution of SHAP values for FAST Facial Weakness",
+       x="FAST Facial Weakness", y="SHAP value for FAST Facial Weakness")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5),
+        axis.text.x = element_text(face="bold", size=10)
+  )
+Face_Dep
+
+
+Arm_Dep=shap.plot.dependence(Shapvals, 
+                     x="FAST Arm Weakness", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red", method="loess")+
+  stat_cor(method="spearman", hjust=-1)+
+  scale_x_continuous(breaks=c(0, 1), label=c("No", "Yes"))+
+  labs(title="Distribution of SHAP values for FAST Arm Weakness",
+       x="FAST Arm Weakness", y="SHAP value for FAST Arm Weakness")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5),
+        axis.text.x = element_text(face="bold", size=10)
+                                  )
+Arm_Dep
+
+Speech_Dep=shap.plot.dependence(Shapvals, 
+                             x="Speech_Disturbance", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red", method="loess")+
+  stat_cor(method="spearman", hjust=-1)+
+  scale_x_continuous(breaks=c(0, 1), label=c("No", "Yes"))+
+  labs(title="Distribution of SHAP values for Speech Disturbance",
+       x="Speech Disturbance", y="SHAP value for Speech Disturbance")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5),
+        axis.text.x = element_text(face="bold", size=10)
+  )
+Speech_Dep
+
+Hx_Stroke_Dep=shap.plot.dependence(Shapvals, 
+                             x="History_of_Stroke",add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red", method="loess")+
+  stat_cor(method="spearman", hjust=-1)+
+  scale_x_continuous(breaks=c(0, 1), label=c("No", "Yes"))+
+  labs(title="Distribution of SHAP values for History of Stroke",
+       x="History of Stroke", y="SHAP value for History of Stroke")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5),
+        axis.text.x = element_text(face="bold", size=10)
+  )
+Hx_Stroke_Dep
+
+
+SBP_Dep=shap.plot.dependence(Shapvals, 
+                     x="Systolic Blood Pressure mmHg", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red")+
+  stat_cor(method="spearman", hjust=-1)+
+  labs(title="Distribution of SHAP values for Systolic Blood Pressure",
+       x="Systolic Blood Pressure (mmHg)", y="SHAP value for Systolic Blood Pressure")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5)
+  )
+SBP_Dep
+
+DBP_Dep=shap.plot.dependence(Shapvals, 
+                     x="Diastolic Blood Pressure mmHg", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red")+
+  stat_cor(method="spearman", hjust=-1)+
+  labs(title="Distribution of SHAP values for Diastolic Blood Pressure",
+       x="Diastolic Blood Pressure (mmHg)", y="SHAP value for Diastolic Blood Pressure")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5)
+  )
+DBP_Dep
+
+BM_Dep=shap.plot.dependence(Shapvals, 
+                     x="Capillary Blood Glucose mmol L", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red")+
+  stat_cor(method="spearman", hjust=-1)+
+  labs(title="Distribution of SHAP values for Glucose",
+       x="Glucose (mmol/L)", y="SHAP values for Glucose")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5)
+  )
+BM_Dep
+
+Temp_Dep=shap.plot.dependence(Shapvals, 
+                             x="Temperature Degrees C", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red")+
+  stat_cor(method="spearman", hjust=-1)+
+  labs(title="Distribution of SHAP values for Temperature",
+       x="Temperature (Degrees C)", y="SHAP value for Temperature")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5)
+  )
+Temp_Dep
+
+
+HR_Dep=shap.plot.dependence(Shapvals, 
+                              x="Heart_Rate_BPM", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red")+
+  stat_cor(method="spearman", hjust=-1)+
+  labs(title="Distribution of SHAP values for Heart Rate",
+       x="Heart Rate", y="SHAP value for Heart Rate")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5)
+  )
+HR_Dep
+
+Resp_Dep=shap.plot.dependence(Shapvals, 
+                            x="Respiratory_Rate_BPM", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red")+
+  stat_cor(method="spearman", hjust=-1)+
+  labs(title="Distribution of SHAP values for Respiratory Rate",
+       x="Respiratory Rate (BPM)", y="SHAP values for Respiratory Rate")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5)
+  )
+Resp_Dep
+
+POS_Dep=shap.plot.dependence(Shapvals, 
+                            x="Peripheral_Oxygen_Saturation_Percent", add_stat_cor=FALSE, smooth=FALSE)+
+  geom_smooth(color="red")+
+  stat_cor(method="spearman", hjust=-1)+
+  labs(title="Distribution of SHAP values for Peripheral Oxygen Saturation",
+       x="Peripheral Oxygen Saturation (%)", y="SHAP value for Peripheral Oxygen Saturation")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5)
+  )
+POS_Dep
+
+# Top 7 continuous variables 
+
+#need to sub the names for them to display
+  names(Shap_values$mean_shap_score)=gsub("_", " ", names(Shap_values$mean_shap_score))
+
+dep_list = lapply(names(Shap_values$mean_shap_score)[c(2, 3, 4, 6, 7, 8, 9)], shap.plot.dependence, 
+                  data_long = Shapvals)
+Dep_grid=gridExtra::grid.arrange(grobs = dep_list, ncol = 2)
+plot(Dep_grid)
+
+ggsave(plot=Dep_grid, path="S:/StroBE and ABACUS data for Hannah/Plots/Dependence Plots", filename="Dependency Facet.png", height=15, width=9)
+
+
+```
+
+##### Shap Interactions #####
+```{r}
+
+ShapvizMx=X_train
+
+ShapvizObj=shapviz(LVO_fit, X_pred=data.matrix(ShapvizMx), X=ShapvizMx)
+
+sv_importance(ShapvizObj) 
+
+ShapvizintObj=shapviz(LVO_fit, X_pred=data.matrix(ShapvizMx), interactions=TRUE, X=ShapvizMx)
+  
+Shap_ints=sv_interaction(ShapvizintObj, max_display = 8)+
+scale_color_gradient(low="#2B1BFD", high="#FC1C21", breaks = c(0, 1), name="Feature Value", labels = c("Low/No/Male", 
+            "High/Yes/Female"))
+Shap_ints
+
+ggsave(plot=Shap_ints, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Interactions", filename="SHAP Interactons 100lh.png", height=14, width=17)
+
+shapintdf=data.frame(ShapvizintObj$S_inter)
+
+#Interaction values for top interactions
+Shapintvals=data.frame(colMeans(shapintdf))
+Shapintvalssub=filter(Shapintvals, colMeans.shapintdf.!=0.000000e+00)
+colnames(Shapintvalssub)[1]="value"
+
+#Make the negative interactions positive + rescale *100 to be able to see the order
+Shapintvalssub$valueS=Shapintvalssub$value*100
+Shapintvalssub$valueS=gsub("-", "", Shapintvalssub$valueS)
+Shapintvalssub$valueS=as.numeric(Shapintvalssub$valueS)
+Shapintvalssub=data.frame(Shapintvalssub[order(Shapintvalssub$valueS,decreasing=TRUE),])
+Shapintvalssub$Probability=exp(Shapintvalssub$value)/(1+exp(Shapintvalssub$value))
+  
+view(Shapintvalssub)
+
+shapviz::collapse_shap(ShapvizintObj)
+
+```
+
+#####Shap dependence interactions######
+```{r}
+
+## Dependence interactions
+
+ArmxSBP=shap.plot.dependence(Shapvals, 
+                             x="Systolic_Blood_Pressure_mmHg",
+                             color_feature ="FAST_Arm_Weakness",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  #scale_color_manual(name="Arm Weakness", values=c("#2B1BFD", "#FC1C21"))+
+    scale_color_gradient(name="FAST Arm Weakness (No-Yes)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Systolic Blood Pressure 
+       and their interaction with FAST Arm Weakness")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP value for Systolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+ArmxSBP
+
+TempxFaceLVOES=shap.plot.dependence(Shapvals, 
+                             x="Temperature Degrees C",
+                             color_feature = "FAST Facial Weakness",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  #scale_color_manual(name="FAST Facial Weakness", values=c("#2B1BFD", "#FC1C21"))+
+    scale_color_gradient(name="FAST Facial Weakness (No-Yes)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Temperature 
+       and their interaction with FAST Facial Weakness")+
+  xlab("Temperature (Degrees C)")+
+  ylab("SHAP value for Temperature")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+TempxFaceLVOES
+
+TempxSpeechLVOES=shap.plot.dependence(Shapvals, 
+                             x="Temperature Degrees C",
+                             color_feature = "Speech Disturbance",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  #scale_color_manual(name="Arm Weakness", values=c("#2B1BFD", "#FC1C21"))+
+    scale_color_gradient(name="Speech Disturbance",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Temperature 
+       and their interaction with Speech Disturbance")+
+  xlab("Temperature (Degrees C)")+
+  ylab("SHAP value for Temperature")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+TempxSpeechLVOES
+
+
+
+
+#Age and SBP
+AgexSBP=shap.plot.dependence(Shapvals, 
+                             x="Age in Years",
+                             color_feature = "Systolic Blood Pressure mmHg",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Age 
+       and their interaction with Systolic Blood Pressure")+
+  xlab("Age in Years")+
+  ylab("SHAP value for Age in Years")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+AgexSBP
+
+AgexSBPxSBP=shap.plot.dependence(Shapvals, 
+                     x="Age in Years", y="Systolic Blood Pressure mmHg",
+                     color_feature = "Systolic Blood Pressure mmHg",
+                     alpha=1,
+                     add_stat_cor=FALSE,
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Systolic Blood Pressure
+  and their interaction with Age")+
+  xlab("Age in Years")+
+  ylab("SHAP value for Systolic Blood Pressure")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+AgexSBPxSBP
+
+SBPxAge=shap.plot.dependence(Shapvals, 
+                             x="Systolic Blood Pressure mmHg",
+                             color_feature = "Age in Years",
+                             smooth=FALSE
+                             )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Age in Years (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP value for Systolic Blood Pressure (mmHg)")+
+  labs(title="Distribution of SHAP values for 
+       Systolic Blood Pressure and their interaction with Age")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxAge
+
+SBPxAgexAge=shap.plot.dependence(Shapvals, 
+                             x="Systolic_Blood_Pressure_mmHg",
+                             y="Age_in_Years",
+                             color_feature = "Age_in_Years",
+                             smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Age in Years (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP value for Age in Years")+
+  labs(title="Distribution of SHAP values for 
+       Age and their interaction with Systolic Blood Pressure")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxAgexAge
+
+#Grid for all SBP and Age plots 
+SBP_Age_grid=gridExtra::grid.arrange(AgexSBP, AgexSBPxSBP, SBPxAge, SBPxAgexAge, nrow=2)
+SBP_Age_grid
+
+
+FacexAge=shap.plot.dependence(Shapvals, 
+                             x="Age_in_Years",
+                             color_feature ="FAST_Facial_Weakness",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="NIHSS Facial Weakness (No-Yes)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Age in Years 
+       and their interaction with NIHSS Facial Weakness")+
+  xlab("Age in Years")+
+  ylab("SHAP value for Age in Years")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+FacexAge
+
+
+#Face and SBP
+FacexSBP=shap.plot.dependence(Shapvals, 
+                             x="Systolic Blood Pressure mmHg",
+                             color_feature ="NIHSS Facial Weakness",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="NIHSS Facial Weakness (No-Yes)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Systolic Blood Pressure 
+       and their interaction with NIHSS Facial Weakness")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP value for Systolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+FacexSBP
+
+#Face and DBP
+FacexDBP=shap.plot.dependence(Shapvals, 
+                             x="Diastolic Blood Pressure mmHg",
+                             color_feature ="NIHSS Facial Weakness",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="NIHSS Facial Weakness (No-Yes)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Diastolic Blood Pressure 
+       and their interaction with NIHSS Facial Weakness")+
+  xlab("Diastolic Blood Pressure (mmHg)")+
+  ylab("SHAP value for Diastolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+FacexDBP
+
+#Face and BM
+FacexBM=shap.plot.dependence(Shapvals, 
+                             x="Capillary Blood Glucose mmol L",
+                             color_feature ="NIHSS Facial Weakness",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="NIHSS Facial Weakness (No-Yes)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Glucose 
+       and their interaction with NIHSS Facial Weakness")+
+  xlab("Capillary Blood Glucose (mmol/L)")+
+  ylab("SHAP value for Capillary Blood Glucose (mmol/L)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+FacexBM
+
+#Face and Temp
+FacexTemp=shap.plot.dependence(Shapvals, 
+                             x="Temperature_Degrees_C",
+                             color_feature ="FAST_Facial_Weakness",
+                             alpha=1,
+                             smooth = FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="NIHSS Facial Weakness (No-Yes)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Temperature 
+       and their interaction with NIHSS Facial Weakness")+
+  xlab("Temperature (Degrees C)")+
+  ylab("SHAP value for Temperature (Degrees C)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+FacexTemp
+
+
+#Age and Temp
+AgexTemp=shap.plot.dependence(Shapvals, 
+                     x="Age in Years",
+                     color_feature = "Temperature Degrees C",
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Temperature (Degrees C) (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+       Age and their interaction with Temperature")+
+  xlab("Age in Years")+
+  ylab("SHAP value for Age in Years")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+AgexTemp
+
+AgexTempxTemp=shap.plot.dependence(Shapvals, 
+                              x="Age_in_Years",
+                              y="Temperature_Degrees_C",
+                              color_feature = "Temperature_Degrees_C",
+                              smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Temperature (Degrees C) (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+       Age and their interaction with Temperature")+
+  xlab("Age in Years")+
+  ylab("SHAP value for Temperature")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+AgexTempxTemp
+
+TempxAge=shap.plot.dependence(Shapvals, 
+                              x="Temperature Degrees C",
+                              color_feature = "Age in Years",
+                              smooth=FALSE
+                              )+  
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Age in Years (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+       Temperature and their interaction with Age")+
+  xlab("Temperature (Degrees C)")+
+  ylab("SHAP value for Temperature (Degrees C)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+TempxAge
+
+TempxAgexAge=shap.plot.dependence(Shapvals, 
+                              x="Temperature_Degrees_C",
+                              y="Age_in_Years",
+                              color_feature = "Age_in_Years",
+                              smooth=FALSE)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Age in Years (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+       Temperature and their interaction with Age")+
+  xlab("Temperature (Degrees C)")+
+  ylab("SHAP value for Age in Years")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+TempxAgexAge
+
+#TempxAge grid 
+Temp_Age_grid=gridExtra::grid.arrange(AgexTemp, AgexTempxTemp, TempxAge, TempxAgexAge, nrow=2)
+Temp_Age_grid
+
+#SBP and Temp
+SBPxTemp=shap.plot.dependence(Shapvals, 
+                     x="Systolic_Blood_Pressure_mmHg",
+                     color_feature = "Temperature_Degrees_C",
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Temperature (Degrees C) (Feature value)",low="#2B1BFD", high="#FC1C21")+
+      labs(title="Distribution of SHAP values for 
+      Systolic Blood Pressure and their interaction with Temperature")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP values for Systolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxTemp
+
+SBPxTempxTemp=shap.plot.dependence(Shapvals, 
+                              x="Systolic_Blood_Pressure_mmHg",
+                              y="Temperature_Degrees_C",
+                              color_feature = "Temperature_Degrees_C",
+                              smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Temperature (Degrees C) (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+      Systolic Blood Pressure and their interaction with Temperature")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP values for Temperature (Degrees C)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxTempxTemp
+
+TempxSBP=shap.plot.dependence(Shapvals, 
+                              x="Temperature_Degrees_C",
+                              color_feature = "Systolic_Blood_Pressure_mmHg",
+                              smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+       Temperature and their interaction with Blood Pressure")+
+  xlab("Temperature (Degrees C)")+
+  ylab("SHAP values for Temperature (Degrees C)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+TempxSBP
+
+TempxSBPxSBP=shap.plot.dependence(Shapvals, 
+                              x="Temperature_Degrees_C",
+                              y="Systolic_Blood_Pressure_mmHg",
+                              color_feature = "Systolic_Blood_Pressure_mmHg",
+                              smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+       Temperature and their interaction with Blood Pressure",
+       x="Temperature (Degrees C)", y="SHAP values for Systolic Blood Pressure (mmHg)"
+       )+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+TempxSBPxSBP
+
+#      TempxSBP grid 
+Temp_SBP_grid=gridExtra::grid.arrange(SBPxTemp, SBPxTempxTemp, TempxSBP, TempxSBPxSBP, nrow=2)
+Temp_SBP_grid
+
+SBPxDBP=shap.plot.dependence(Shapvals, 
+                     x="Systolic_Blood_Pressure_mmHg",
+                     color_feature = "Diastolic_Blood_Pressure_mmHg",
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Diastolic Blood Pressure (mmHg) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Systolic Blood Pressure 
+       and their interaction with Diastolic Blood Pressure")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP values for Systolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxDBP
+
+DBPxSBP=shap.plot.dependence(Shapvals, 
+                     x="Diastolic_Blood_Pressure_mmHg",
+                     color_feature = "Systolic_Blood_Pressure_mmHg",
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Diastolic Blood Pressure 
+       and their interaction with Systolic Blood Pressure")+
+  xlab("Diastolic Blood Pressure (mmHg)")+
+  ylab("SHAP values for Diastolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+DBPxSBP
+
+HRxSBP=shap.plot.dependence(Shapvals, 
+                     x="Heart_Rate_BPM",
+                     color_feature = "Systolic_Blood_Pressure_mmHg",
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Heart Rate 
+       and their interaction with Systolic Blood Pressure")+
+  xlab("Heart Rate (BPM)")+
+  ylab("SHAP values for Heart Rate (BPM)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+HRxSBP
+
+SBPxHR=shap.plot.dependence(Shapvals, 
+                     x="Systolic_Blood_Pressure_mmHg",
+                     color_feature = "Heart_Rate_BPM",
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Heart Rate (BPM) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Systolic Blood Pressure 
+       and their interaction with Heart Rate")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP values for Systolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxHR
+
+SBPxBM=shap.plot.dependence(Shapvals, 
+                     x="Systolic_Blood_Pressure_mmHg",
+                     color_feature = "Capillary_Blood_Glucose_mmol_L",
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Glucose (mmol/L) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+      Systolic Blood Pressure and their interaction with Glucose")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP values for Systolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxBM
+
+SBPxBMxBM=shap.plot.dependence(Shapvals, 
+                            x="Capillary Blood Glucose mmol L",
+                            #y="Capillary Blood Glucose mmol L",
+                            color_feature = "Systolic Blood Pressure mmHg",
+                            smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Glucose 
+       and their interaction with Systolic Blood Pressure")+
+  xlab("Capillary Blood Glucose (mmol/L)")+
+  ylab("SHAP values for Glucose (mmol/L)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxBMxBM
+
+
+SBPxArm=shap.plot.dependence(Shapvals, 
+                     x="Systolic_Blood_Pressure_mmHg",
+                     color_feature = "FAST_Arm_Weakness",
+                     smooth=FALSE
+                     )+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Arm Weakness (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Systolic Blood Pressure
+       and their interaction with Arm Weakness")+
+  xlab("Systolic Blood Pressure (mmHg)")+
+  ylab("SHAP values for Systolic Blood Pressure")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+SBPxArm
+
+BMxSBP=shap.plot.dependence(Shapvals, 
+                            x="Capillary_Blood_Glucose_mmol_L",
+                            color_feature = "Systolic_Blood_Pressure_mmHg",
+                            smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Glucose
+       and their interaction with Systolic Blood Pressure")+
+  xlab("Glucose (mmol/L)")+
+  ylab("SHAP values for Glucose (mmol/L)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+BMxSBP
+
+BMxSBPxSBP=shap.plot.dependence(Shapvals, 
+                            x="Capillary_Blood_Glucose_mmol_L",
+                            y="Systolic_Blood_Pressure_mmHg",
+                            color_feature = "Systolic_Blood_Pressure_mmHg",
+                            smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Systolic Blood Pressure (mmHg) (Feature value)", low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Glucose
+       and their interaction with Systolic Blood Pressure")+
+  xlab("Glucose (mmol/L)")+
+  ylab("SHAP values for Systolic Blood Pressure (mmHg)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+BMxSBPxSBP
+
+
+TempxBM=shap.plot.dependence(Shapvals, 
+                              x="Temperature_Degrees_C",
+                              color_feature = "Capillary_Blood_Glucose_mmol_L",
+                              smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Capillary Blood Glucose (mmol/L) (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for 
+       Temperature and their interaction with Glucose")+
+  xlab("Temperature (Degrees C)")+
+  ylab("SHAP values for Temperature (Degrees C)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+TempxBM
+
+BMxTemp=shap.plot.dependence(Shapvals, 
+                              x="Capillary_Blood_Glucose_mmol_L",
+                              color_feature = "Temperature_Degrees_C",
+                              smooth=FALSE
+)+
+  geom_smooth(color="black")+
+  scale_color_gradient(name="Temperature (Feature value)",low="#2B1BFD", high="#FC1C21")+
+  labs(title="Distribution of SHAP values for Glucose 
+        and their interaction with Temperature")+
+  xlab("Capillary Blood Glucose (mmol/L)")+
+  ylab("SHAP values for Capillary Blood Glucose (mmol/L)")+
+  theme(plot.title = element_text(face="bold", size=10, hjust=0.5))
+BMxTemp
+
+
+# BMxSBP grid 
+BM_SBP_grid=gridExtra::grid.arrange(SBPxBM, SBPxBMxBM, BMxSBP, BMxSBPxSBP, nrow=2)
+BM_SBP_grid
+
+# Strongest interactions (with at least one continuous variable) facet 
+Strong_grid=gridExtra::grid.arrange(ArmxSBP, FacexSBP,FacexBM, FacexAge,FacexTemp,TempxBM,BMxTemp, SBPxHR, nrow=2)
+plot(Strong_grid)
+
+ggsave(plot=Strong_grid, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Interactions", filename="Dependency Interactions Facet.png", height=12, width=22)
+
+```
+
+#####ICE Curves
+```{r}
+
+Face_Ice_example=plot(ice(LVO_fit, X=DX_LVO_Mx, predictor="NIHSS_Facial_Weakness", logodds=TRUE))
+Face_Ice_example
+SBP_Ice_example=plot(ice(LVO_fit, X=DX_LVO_Mx, predictor="Systolic_Blood_Pressure_mmHg", logodds=TRUE))
+SBP_Ice_example
+Arm_Ice_example=plot(ice(LVO_fit, X=DX_LVO_Mx, predictor="Arm_Weakness", logodds=TRUE))
+Arm_Ice_example
+BM_Ice_example=plot(ice(LVO_fit, X=DX_LVO_Mx, predictor="Capillary_Blood_Glucose_mmol_L", logodds=TRUE))
+BM_Ice_example
+Age_Ice_example=plot(ice(LVO_fit, X=DX_LVO_Mx, predictor="Age_in_Years", logodds=TRUE))
+Age_Ice_example
+
+```
+
+###Model Development######
+```{r}
+
+####visualise model and interactions#######
+
+#plot lollipop plot (of tree development)
+#shows vars and interactions for each tree in model
+
+lolly=lollipop(LVO_fit, X_train)
+lolliplot=plot(lolly, 
+              # labels="topAll", 
+               log_scale=TRUE, max.overlaps=Inf, width=10000, col=c("#37C5F7", "#36A9F8", "#3664F8", "#6037F7", 
+                                                                                               "#8537F7", "#A037F7", "#C937F7", "#F139F5", 
+                                                                                               "#F539DA", "#F539B2", "#F43A8A", "#F43A62", "#F23C3C" 
+), bg=c("#37C5F7", "#36A9F8", "#3664F8", "#6037F7", "#8537F7", "#A037F7", "#C937F7", "#F139F5", "#F539DA", "#F539B2", "#F43A8A", "#F43A62", "#F23C3C" 
+))+
+ # geom_point()+ # adds black circles 
+  scale_color_manual(values=c("#37C5F7", "#36A9F8", "#3664F8", "#6037F7", 
+                              "#8537F7", "#A037F7", "#C937F7", "#F139F5", 
+                              "#F539DA", "#F539B2", "#F43A8A", "#F43A62", "#F23C3C" 
+                              ), name="Depth")+
+  scale_shape_manual(values=c(0, 1, 2, 4, 3, 5, 6, 7, 9, 11, 12, 13, 14), name="Depth")
+lolliplot
+
+Lolliplot=export_graph(lolliplot, file_name="Lollipop.svg", file_type ="svg", width=10000)
+
+Lolliplot=export_svg(lolliplot)
+
+```
+
+##### Force plots #####
+```{r}
+
+##Correct LVO
+Disc_LVOdfcorr=filter(Disc_LVOdf, `Misclassified LVO`=="Correct")
+Disc_LVOdfcorrsub=Disc_LVOdfcorr%>%
+  select(-"Misclassified LVO")
+Disc_LVOdfcorrsub=Disc_LVOdfcorrsub%>%
+  select_all(~gsub(" ", "_",.))
+
+LVO_Corr_Mx=Disc_LVOdfcorrsub
+X_predLVO=data.matrix(LVO_Corr_Mx)
+
+shap_prepLVO=shap.prep(LVO_fit, X_train=X_predLVO)
+
+shap_valuesLVO=shap.values(xgb_model=LVO_fit, X_train=X_predLVO)
+
+shap_valuesLVO$shap_score=shap_valuesLVO$shap_score%>%
+  select_all(~gsub("_", " ",.))
+
+shap_prepLVO=shap.prep.stack.data(shap_valuesLVO$shap_score, top_n = 15) # 
+shap_prepLVO
+
+LVO_shapforce=shap.plot.force_plot(shap_prepLVO)+
+  labs(title="Feature contributions for correctly identified LVO patients")+
+  theme(plot.title=element_text(hjust=.5, face="bold"))
+LVO_shapforce
+
+ggsave(plot=LVO_shapforce, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Discrepancy/Force Plots", filename="CLVO force.png", height=8, width=11)
+
+ShapvizObjSC=shapviz(xgb_modelES, X_pred=X_pred, X=Stroke_Corr_Mx)
+
+#Incorrect LVO
+
+Disc_LVOdfincorr=filter(Disc_LVOdf, `Misclassified LVO`=="Incorrect")
+Disc_LVOdfincorrsub=Disc_LVOdfincorr%>%
+  select(-"Misclassified LVO")
+Disc_LVOdfincorrsub=Disc_LVOdfincorrsub%>%
+  select_all(~gsub(" ", "_",.))
+
+LVO_Incorr_Mx=Disc_LVOdfincorrsub
+X_predILVO=data.matrix(LVO_Incorr_Mx)
+
+shap_prepILVO=shap.prep(LVO_fit, X_train=X_predILVO)
+
+shap_valuesILVO=shap.values(xgb_model=LVO_fit, X_train=X_predILVO)
+
+shap_valuesILVO$shap_score=shap_valuesILVO$shap_score%>%
+  select_all(~gsub("_", " ",.))
+
+shap_prepILVO=shap.prep.stack.data(shap_valuesILVO$shap_score, top_n = 15) # 
+shap_prepILVO
+
+ILVO_shapforce=shap.plot.force_plot(shap_prepILVO,zoom_in=FALSE)+
+  labs(title="Feature contributions for incorrectly identified stroke patients")+
+  theme(plot.title=element_text(hjust=.5, face="bold"))
+ILVO_shapforce
+
+ggsave(plot=ILVO_shapforce, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Discrepancy/Force Plots", filename="ILVO force.png", height=8, width=11)
+
+
+#Correct non-LVO
+Disc_LVOESdfnoncorr=filter(Disc_LVOESdf, `Misclassified non-LVO`=="Correct")
+Disc_LVOESdfnoncorrsub=Disc_LVOESdfnoncorr%>%
+  select(-"Misclassified non-LVO", -"Detailed Diagnosis")
+Disc_LVOESdfnoncorrsub=Disc_LVOESdfnoncorrsub %>%
+  select_all(~gsub(" ", "_",.))
+
+NLVO_Corr_Mx=Disc_LVOESdfnoncorrsub
+X_predNLVO=data.matrix(NLVO_Corr_Mx)
+
+shap_prepCNLVO=shap.prep(LVO_fit, X_train=X_predNLVO)
+
+shap_valuesCNLVO=shap.values(xgb_model=LVO_fit, X_train=X_predNLVO)
+
+shap_valuesCNLVO$shap_score=shap_valuesCNLVO$shap_score%>%
+  select_all(~gsub("_", " ",.))
+
+shap_prepCNLVO=shap.prep.stack.data(shap_valuesCNLVO$shap_score, top_n = 15) # 
+shap_prepCNLVO
+
+CNLVO_shapforce=shap.plot.force_plot(shap_prepCM, zoom_in=FALSE)+
+  labs(title="Feature contributions for correctly identified non-LVO patients")+
+  theme(plot.title=element_text(hjust=.5, face="bold"))
+CNLVO_shapforce
+
+ggsave(plot=CNLVO_shapforce, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Discrepancy/Force Plots", filename="CnLVO force.png", height=8, width=11)
+
+#incorrect non-LVO
+Disc_LVOESdfNLVOincorr=filter(Disc_LVOESdf, `Misclassified non-LVO`=="Incorrect")
+Disc_LVOESdfNLVOincorrsub=Disc_LVOESdfNLVOincorr%>%
+  select(-"Misclassified non-LVO")
+Disc_LVOESdfNLVOincorrsub=Disc_LVOESdfNLVOincorrsub%>%
+  select_all(~gsub(" ", "_",.))
+
+INLVO_Incorr_Mx=Disc_LVOESdfNLVOincorrsub
+X_predINLVO=data.matrix(INLVO_Incorr_Mx)
+
+shap_prepINLVO=shap.prep(LVO_fit, X_train=X_predINLVO)
+
+shap_valuesINLVO=shap.values(xgb_model=LVO_fit, X_train=X_predINLVO)
+
+shap_valuesINLVO$shap_score=shap_valuesINLVO$shap_score%>%
+  select_all(~gsub("_", " ",.))
+
+shap_prepINLVO=shap.prep.stack.data(shap_valuesINLVO$shap_score, top_n = 15) # 
+shap_prepINLVO
+
+INLVO_shapforce=shap.plot.force_plot(shap_prepINLVO)+
+  labs(title="Feature contributions for incorrectly identified non-LVO patients")+
+  theme(plot.title=element_text(hjust=.5, face="bold"))
+INLVO_shapforce
+
+ggsave(plot=INLVO_shapforce, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Discrepancy/Force Plots", filename="INLVO force.png", height=8, width=11)
+
+```
+
+######Waterfalls for single cases - correct and incorrect classification########
+```{r}
+
+#Randomly select correctly and incorrectly identified stroke and mimic patients 
+
+# Whole Dataset
+Predict_fnctLVO$N=row(Predict_fnctLVO)[,1]
+Predict_fnctLVO$LVO_Prediction=Predict_fnctLVO$`predict(LVO_fit, DX_LVO_Mx)`
+Predict_fnctLVO$Predicted_Class=ifelse(Predict_fnctLVO$LVO_Prediction>Best_threshkf[1,], "LVO", "non-LVO")  
+StroBEABACUS_LVON=StroBEABACUS_LVO
+StroBEABACUS_LVON$N=row(StroBEABACUS_LVON)[,1]
+LVO_Preds=merge(Predict_fnctLVO, StroBEABACUS_LVON, by="N")
+
+set.seed(73)
+rand_grp=LVO_Preds%>%
+  group_by(Diagnosis, Predicted_Class)%>%
+slice_sample(n=1, replace=TRUE)
+LVO_Preds$TRow=row(LVO_Preds)[, 1]
+
+CLVO_case=filter(rand_grp, Predicted_Class=="LVO" & Diagnosis=="LVO")
+CLVO_row=as.data.frame(CLVO_case$N)
+CLVO_row=filter(LVO_Preds, N==CLVO_row$`CLVO_case$N`)
+CLVO_Trow=CLVO_row$TRow
+
+ILVO_case=filter(rand_grp, Predicted_Class=="non-LVO" & Diagnosis=="LVO")
+ILVO_row=as.data.frame(ILVO_case$N)
+ILVO_row=filter(LVO_Preds, N==ILVO_row$`ILVO_case$N`)
+ILVO_Trow=ILVO_row$TRow
+
+CNLVO_case=filter(rand_grp, Predicted_Class=="non-LVO" & Diagnosis=="non-LVO")
+CNLVO_row=as.data.frame(CNLVO_case$N)
+CNLVO_row=filter(LVO_Preds, N==CNLVO_row$`CNLVO_case$N`)
+CNLVO_Trow=CNLVO_row$TRow
+
+INLVO_case=filter(rand_grp, Predicted_Class=="LVO" & Diagnosis=="non-LVO")
+INLVO_row=as.data.frame(INLVO_case$N)
+INLVO_row=filter(LVO_Preds, N==INLVO_row$`INLVO_case$N`)
+INLVO_Trow=INLVO_row$TRow
+
+#Correct LVO
+PtCLVOPred=LVO_Preds$"LVO_Prediction"[CLVO_Trow]
+PtCLVOClass=LVO_Preds$"Predicted_Class"[CLVO_Trow]
+PtCLVODx=LVO_Preds$Diagnosis[CLVO_Trow]
+
+#Incorrect LVO
+PtILVOPred=LVO_Preds$"LVO_Prediction"[ILVO_Trow]
+PtILVOClass=LVO_Preds$"Predicted_Class"[ILVO_Trow]
+PtILVODx=LVO_Preds$Diagnosis[ILVO_Trow]
+
+#Correct non-LVO
+PtCNLVOPred=LVO_Preds$"LVO_Prediction"[CNLVO_Trow]
+PtCNLVOClass=LVO_Preds$"Predicted_Class"[CNLVO_Trow]
+PtCNLVODx=LVO_Preds$"Diagnosis"[CNLVO_Trow]
+
+#Incorrect non-LVO
+PtINLVOPred=LVO_Preds$"LVO_Prediction"[INLVO_Trow]
+PtINLVOClass=LVO_Preds$"Predicted_Class"[INLVO_Trow]
+PtINLVODx=LVO_Preds$"Diagnosis"[INLVO_Trow]
+
+#Cross validated (can't use to plot)
+
+Trained_XGB_Preds$LVO_Prediction=Trained_XGB_Preds$.pred_LVO
+Trained_XGB_Preds$Predicted_Class=ifelse(Trained_XGB_Preds$LVO_Prediction>Best_threshkf[1,], "LVO", "non-LVO")
+
+#KF preds for WD randomised patients - using WD row as reference
+#Correct LVO
+PtCLVOKFPred=Trained_XGB_Preds$"LVO_Prediction"[CLVO_Trow]
+PtCLVOKFClass=Trained_XGB_Preds$"Predicted_Class"[CLVO_Trow]
+PtCLVOKFDx=Trained_XGB_Preds$Diagnosis[CLVO_Trow]
+
+#Incorrect LVO
+PtILVOKFPred=Trained_XGB_Preds$"LVO_Prediction"[ILVO_Trow]
+PtILVOKFClass=Trained_XGB_Preds$"Predicted_Class"[ILVO_Trow]
+PtILVOKFDx=Trained_XGB_Preds$Diagnosis[ILVO_Trow]
+
+#Correct non-LVO
+PtCNLVOKFPred=Trained_XGB_Preds$"LVO_Prediction"[CNLVO_Trow]
+PtCNLVOKFClass=Trained_XGB_Preds$"Predicted_Class"[CNLVO_Trow]
+PtCNLVOKFDx=Trained_XGB_Preds$"Diagnosis"[CNLVO_Trow]
+
+#Incorrect non-LVO
+PtINLVOKFPred=Trained_XGB_Preds$"LVO_Prediction"[INLVO_Trow]
+PtINLVOKFClass=Trained_XGB_Preds$"Predicted_Class"[INLVO_Trow]
+PtINLVOKFDx=Trained_XGB_Preds$"Diagnosis"[INLVO_Trow]
+
+#calculate the chosen best thresh in log-odds to scale with plot
+Best_Thresh_log=as.vector(log(Best_threshkf/(1-Best_threshkf)))
+
+# Correct LVO patient
+shapvizwfCLVO=sv_waterfall(ShapvizObj, row_id = CS_Trow, fill_colors=c("#2B1BFD", "#FB5757"), annotation_size = 5)+
+  geom_vline(xintercept=Best_Thresh_log$threshold)+
+labs(title=sprintf("LVO prediction probability = %g (Kfold = %g), 
+predicted class (at >.49 = LVO threshold) = %s, (Kfold = %s), actual diagnosis = %s", round(PtCLVOPred, 3), round(PtCLVOKFPred, 3), PtCLVOClass, PtCLVOKFClass, PtCLVODx))+
+scale_x_continuous(breaks=c(-0.35, -0.25, -0.15, 0, 0.15,0.25,  0.35), labels=c("<- non-LVO",-0.25, -0.15, 0, 0.15, 0.25,"LVO ->"))+
+  xlab("Prediction (log odds)")+
+  theme(plot.title=element_text(hjust=.5, face="bold", size=14),
+        axis.text=element_text(face="bold", size=14),
+        axis.title = element_text(face="bold", size=14))
+shapvizwfCLVO
+
+ShapvizLVODF=data.frame(shapvizwfCLVO[["data"]][["label"]])
+ colnames(ShapvizLVODF)[1]="id_cols"
+ShapvizLVODFW=pivot_wider(ShapvizLVODF, names_from=id_cols, values_from=id_cols)  
+ShapvizLVODFW=ShapvizLVODFW%>%
+  select_all(~gsub("_", " ", .))
+
+  shapvizwfCLVO[["data"]][["label"]][2]=colnames(ShapvizLVODFW[2])
+  shapvizwfCLVO[["data"]][["label"]][3]=colnames(ShapvizLVODFW[3])
+  shapvizwfCLVO[["data"]][["label"]][4]=colnames(ShapvizLVODFW[4])
+  shapvizwfCLVO[["data"]][["label"]][5]=colnames(ShapvizLVODFW[5])
+  shapvizwfCLVO[["data"]][["label"]][6]=colnames(ShapvizLVODFW[6])
+  shapvizwfCLVO[["data"]][["label"]][7]=colnames(ShapvizLVODFW[7])
+  shapvizwfCLVO[["data"]][["label"]][8]=colnames(ShapvizLVODFW[8])
+  shapvizwfCLVO[["data"]][["label"]][9]="FAST Arm Weakness = No"
+  shapvizwfCLVO[["data"]][["label"]][10]="FAST Facial Weakness = Yes"
+  
+  shapvizwfCLVO=plot(shapvizwfCLVO)
+shapvizwfCLVO
+
+ggsave(plot=shapvizwfCLVO, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Discrepancy/Waterfalls", filename="CLVO Individual Waterfall Plot.png", height=8, width=13)
+
+#logodds/shap 
+shapvizwfCLVO[["data"]][["S"]]
+
+  #log odds
+  shapvizwfCLVO[["data"]][["from"]]
+  #Probabilities
+  exp(shapvizwfCLVO[["data"]][["S"]])/(1+exp(shapvizwfCLVO[["data"]][["S"]]))
+  #cumulative logodds 
+  shapvizwfCLVO[["data"]][["from"]]
+  #Cumulative probabilities 
+  exp(shapvizwfCLVO[["data"]][["from"]])/(1+exp(shapvizwfCLVO[["data"]][["from"]]))
+  
+ CLVOWFDF=shapvizwfCLVO$data
+ CLVOWFDF$Abs_Prob_from=rd(exp(CLVOWFDF$from)/(1+exp(CLVOWFDF$from)), 3)
+ CLVOWFDF$Abs_Prob_to=rd(exp(CLVOWFDF$to)/(1+exp(CLVOWFDF$to)), 3)
+ CLVOWFDF$SRounded=rd(CLVOWFDF$S, 3)
+ CLVOWFDF$SProb=rd(exp(CLVOWFDF$S)/(1+exp(CLVOWFDF$S)), 3)
+ CLVOWFDFRound=transpose(list(round(CLVOWFDF$S, 3)))
+ CLVOWFDF$from=rd(CLVOWFDF$from, 3)
+  CLVOWFDF$Formula=sprintf("exp(%s)/(1+exp(%s))", rd(CLVOWFDF$S, 3), rd(CLVOWFDF$S, 3))
+
+  CLVOWFDFSorted=CLVOWFDF%>%
+  select(label, SRounded, from)
+  
+  #created after here 
+
+  Baseodds=shapvizwfCLVO[["data"]][["from"]][1]
+  Baseprob=exp(Baseodds)/(1+exp(Baseodds))
+  
+ Probodds=shapvizwfCLVO[["data"]][["to"]][10]
+Probprob=exp(Probodds)/(1+exp(Probodds))
+
+#incorrect LVO
+shapvizwfILVO=sv_waterfall(ShapvizObj, row_id = IS_Trow, fill_colors=c("#2B1BFD", "#FB5757"), annotation_size = 5)+
+  geom_vline(xintercept=Best_Thresh_log$threshold)+
+labs(title=sprintf("LVO prediction probability = %g (Kfold = %g), 
+predicted class (at .49 threshold) = %s (Kfold = %s), actual diagnosis = %s", round(PtILVOPred, 3), round(PtILVOKFPred, 3), PtILVOClass, PtILVOKFClass, PtILVODx))+
+  scale_x_continuous(breaks=c(-0.45, -0.35, -0.25, -0.15, 0, 0.15, 0.25, 0.35, 0.45), labels = c("<- non-LVO", -0.35, -0.25, -0.15, 0, 0.15, 0.25, 0.35, "LVO ->"))+
+    xlab("Prediction (log odds)")+
+  theme(plot.title=element_text(hjust=.5, face="bold", size=14),
+        axis.text=element_text(face="bold", size=14),
+        axis.title = element_text(face="bold", size=14))
+shapvizwfILVO
+
+ShapvizILVODF=data.frame(shapvizwfILVO[["data"]][["label"]])
+ colnames(ShapvizILVODF)[1]="id_cols"
+ShapvizILVODFW=pivot_wider(ShapvizILVODF, names_from=id_cols, values_from=id_cols)  
+ShapvizILVODFW=ShapvizILVODFW%>%
+  select_all(~gsub("_", " ",.))
+
+  shapvizwfILVO[["data"]][["label"]][1]=colnames(ShapvizILVODFW[1])
+  shapvizwfILVO[["data"]][["label"]][2]="History of Diabetes = No"
+  shapvizwfILVO[["data"]][["label"]][3]="Gender = Male"
+  shapvizwfILVO[["data"]][["label"]][4]=colnames(ShapvizILVODFW[4])
+  shapvizwfILVO[["data"]][["label"]][5]=colnames(ShapvizILVODFW[5])
+  shapvizwfILVO[["data"]][["label"]][6]=colnames(ShapvizILVODFW[6])
+  shapvizwfILVO[["data"]][["label"]][7]=colnames(ShapvizILVODFW[7])
+  shapvizwfILVO[["data"]][["label"]][8]="FAST Arm Weakness = Yes"
+  shapvizwfILVO[["data"]][["label"]][9]=colnames(ShapvizILVODFW[9])
+  shapvizwfILVO[["data"]][["label"]][10]="FAST Facial Weakness = No"
+  
+  shapvizwfILVO=plot(shapvizwfILVO)
+shapvizwfILVO
+
+ggsave(plot=shapvizwfILVO, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Discrepancy/Waterfalls", filename="ILVO Individual Waterfall Plot.png", height=8, width=13)
+
+
+#logodds/shap 
+shapvizwfILVO[["data"]][["S"]]
+
+    #log odds
+  shapvizwfILVO[["data"]][["from"]]
+  #Probabilities
+  exp(shapvizwfILVO[["data"]][["S"]])/(1+exp(shapvizwfILVO[["data"]][["S"]]))
+  #cumulative logodds 
+  shapvizwfILVO[["data"]][["from"]]
+  #Cumulative probabilities 
+  exp(shapvizwfILVO[["data"]][["from"]])/(1+exp(shapvizwfILVO[["data"]][["from"]]))
+  
+ ILVOWFDF=shapvizwfILVO$data
+ ILVOWFDF$Abs_Prob_from=rd(exp(ILVOWFDF$from)/(1+exp(ILVOWFDF$from)), 3)
+ ILVOWFDF$Abs_Prob_to=rd(exp(ILVOWFDF$to)/(1+exp(ILVOWFDF$to)), 3)
+ ILVOWFDF$SRounded=rd(ILVOWFDF$S, 3)
+ ILVOWFDF$SProb=rd(exp(ILVOWFDF$S)/(1+exp(ILVOWFDF$S)), 3)
+ ILVOWFDFRound=transpose(list(round(ILVOWFDF$S, 3)))
+ ILVOWFDF$from=rd(ILVOWFDF$from, 3)
+  ILVOWFDF$Formula=sprintf("exp(%s)/(1+exp(%s))", rd(ILVOWFDF$S, 3), rd(ILVOWFDF$S, 3))
+
+  ILVOWFDFSorted=ILVOWFDF%>%
+  select(label, SRounded, from)
+  
+  Baseodds=shapvizwfILVO[["data"]][["from"]][1]
+  Baseprob=exp(Baseodds)/(1+exp(Baseodds))
+  
+ Probodds=shapvizwfILVO[["data"]][["to"]][10]
+Probprob=exp(Probodds)/(1+exp(Probodds))
+
+#Incorrect non-LVO 
+shapvizwfINLVO=sv_waterfall(ShapvizObj, row_id = IM_Trow, fill_colors=c("#2B1BFD", "#FB5757"), annotation_size = 5)+
+  geom_vline(xintercept=Best_Thresh_log$threshold)+
+labs(title=sprintf("LVO prediction probability = %g (Kfold = %g), 
+predicted class (at .49 threshold) = %s (Kfold = %s), actual diagnosis = %s", round(PtINLVOPred, 3), round(PtINLVOKFPred, 3), PtINLVOClass, PtINLVOKFClass, PtINLVODx))+
+  xlab("Prediction (log odds)")+
+  scale_x_continuous(breaks=c(-0.2, -0.10, 0, 0.10, 0.20, 0.30), labels = c("<- non-LVO", -0.10, 0, 0.10, 0.20, "LVO ->"))+
+  theme(plot.title=element_text(hjust=.5, face="bold", size=14),
+        axis.text=element_text(face="bold", size=14),
+        axis.title = element_text(face="bold", size=14))
+shapvizwfINLVO
+
+ShapvizINLVODF=data.frame(shapvizwfINLVO[["data"]][["label"]])
+ colnames(ShapvizINLVODF)[1]="id_cols"
+ShapvizNLVODFW=pivot_wider(ShapvizINLVODF, names_from=id_cols, values_from=id_cols)  
+ShapvizNLVODFW=ShapvizNLVODFW%>%
+  select_all(~gsub("_", " ",.))
+
+  shapvizwfINLVO[["data"]][["label"]][1]=colnames(ShapvizNLVODFW[1])
+  shapvizwfINLVO[["data"]][["label"]][2]=colnames(ShapvizNLVODFW[2])
+  shapvizwfINLVO[["data"]][["label"]][3]=colnames(ShapvizNLVODFW[3])
+  shapvizwfINLVO[["data"]][["label"]][4]="FAST Arm Weakness = Yes"
+  shapvizwfINLVO[["data"]][["label"]][5]=colnames(ShapvizNLVODFW[5])
+  shapvizwfINLVO[["data"]][["label"]][6]=colnames(ShapvizNLVODFW[6])
+  shapvizwfINLVO[["data"]][["label"]][7]=colnames(ShapvizNLVODFW[7])
+  shapvizwfINLVO[["data"]][["label"]][8]=colnames(ShapvizNLVODFW[8])
+  shapvizwfINLVO[["data"]][["label"]][9]="FAST Facial Weakness = Yes"
+  shapvizwfINLVO[["data"]][["label"]][10]=colnames(ShapvizNLVODFW[10])
+  
+  shapvizwfINLVO=plot(shapvizwfINLVO)
+  shapvizwfINLVO
+
+ggsave(plot=shapvizwfINLVO, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Discrepancy/Waterfalls", filename="INLVO Individual Waterfall Plot.png", height=8, width=13)
+
+
+     #log odds
+  shapvizwfINLVO[["data"]][["from"]]
+  #Probabilities
+  exp(shapvizwfINLVO[["data"]][["S"]])/(1+exp(shapvizwfINLVO[["data"]][["S"]]))
+  #cumulative logodds 
+  shapvizwfINLVO[["data"]][["from"]]
+  #Cumulative probabilities 
+  exp(shapvizwfINLVO[["data"]][["from"]])/(1+exp(shapvizwfINLVO[["data"]][["from"]]))
+  
+ INLVOWFDF=shapvizwfINLVO$data
+ INLVOWFDF$Abs_Prob_from=rd(exp(INLVOWFDF$from)/(1+exp(INLVOWFDF$from)), 3)
+ INLVOWFDF$Abs_Prob_to=rd(exp(INLVOWFDF$to)/(1+exp(INLVOWFDF$to)), 3)
+ INLVOWFDF$SRounded=rd(INLVOWFDF$S, 3)
+ INLVOWFDF$SProb=rd(exp(INLVOWFDF$S)/(1+exp(INLVOWFDF$S)), 3)
+ INLVOWFDFRound=transpose(list(round(INLVOWFDF$S, 3)))
+ INLVOWFDF$from=rd(INLVOWFDF$from, 3)
+  INLVOWFDF$Formula=sprintf("exp(%s)/(1+exp(%s))", rd(INLVOWFDF$S, 3), rd(INLVOWFDF$S, 3))
+
+  INLVOWFDFSorted=INLVOWFDF%>%
+  select(label, SRounded, from)
+
+  Baseodds=shapvizwfINLVO[["data"]][["from"]][1]
+  Baseprob=exp(Baseodds)/(1+exp(Baseodds))
+  
+ Probodds=shapvizwfINLVO[["data"]][["to"]][10]
+Probprob=exp(Probodds)/(1+exp(Probodds))
+  
+
+#Correct non-LVO
+shapvizwfCNLVO=sv_waterfall(ShapvizObj, row_id = CM_Trow, fill_colors=c("#2B1BFD", "#FB5757"), annotation_size = 5)+
+   geom_vline(xintercept=Best_thresh$threshold)+  #Best_Thresh_log$threshold
+labs(title=sprintf("LVO prediction probability = %g (Kfold = %g), 
+predicted class (at .49 threshold) = %s (Kfold = %s), actual diagnosis = %s", round(PtCNLVOPred, 3), round(PtCNLVOKFPred, 3),PtCNLVOClass, PtCNLVOKFClass, PtCNLVODx))+
+  xlab("Prediction (log odds)")+
+ # scale_x_continuous(breaks=c(-1.5, -1.25, -1, -0.75, -0.5, -0.25, 0, .25), labels=c("<- non-LVO", -1.25, -1, -0.75, -0.5, -0.25, 0, "LVO ->"))+
+  theme(plot.title=element_text(hjust=.5, face="bold", size=14),
+        axis.text=element_text(face="bold", size=14),
+        axis.title = element_text(face="bold", size=14))
+shapvizwfCNLVO
+ 
+ShapvizCNLVODF=data.frame(shapvizwfCNLVO[["data"]][["label"]])
+ colnames(ShapvizCNLVODF)[1]="id_cols"
+ShapvizCNLVODFW=pivot_wider(ShapvizCNLVODF, names_from=id_cols, values_from=id_cols)  
+ShapvizCNLVODFW=ShapvizCNLVODFW%>%
+  select_all(~gsub("_", " ",.))
+
+  shapvizwfCNLVOshapvizwfCNLVO[["data"]][["label"]][1]="History of Diabetes = No"
+  shapvizwfCNLVO[["data"]][["label"]][2]=colnames(ShapvizCNLVODFW[2])
+  shapvizwfCNLVO[["data"]][["label"]][3]=colnames(ShapvizCNLVODFW[3])
+  shapvizwfCNLVO[["data"]][["label"]][4]=colnames(ShapvizCNLVODFW[4])
+  shapvizwfCNLVO[["data"]][["label"]][5]=colnames(ShapvizCNLVODFW[5])
+  shapvizwfCNLVO[["data"]][["label"]][6]=colnames(ShapvizCNLVODFW[6])
+  shapvizwfCNLVO[["data"]][["label"]][7]=colnames(ShapvizCNLVODFW[7])
+  shapvizwfCNLVO[["data"]][["label"]][8]=colnames(ShapvizCNLVODFW[8])
+  shapvizwfCNLVO[["data"]][["label"]][9]="FAST Arm Weakness = No"
+  shapvizwfCNLVO[["data"]][["label"]][10]="FAST Facial Weakness = No"
+  
+  shapvizwfCNLVO[["plot_env"]][["b"]]=exp(shapvizwfCNLVO[["plot_env"]][["b"]])/(1+exp(shapvizwfCNLVO[["plot_env"]][["b"]]))
+  shapvizwfCNLVO[["plot_env"]][["full_range"]]=exp(shapvizwfCNLVO[["plot_env"]][["full_range"]])/(1+exp(shapvizwfCNLVO[["plot_env"]][["full_range"]]))
+  
+shapvizwfCNLVO$data$S=exp(shapvizwfCNLVO$data$S)/(1+exp(shapvizwfCNLVO$data$S))
+shapvizwfCNLVO$data$from=exp(shapvizwfCNLVO$data$from)/(1+exp(shapvizwfCNLVO$data$from))
+shapvizwfCNLVO$data$to=exp(shapvizwfCNLVO$data$to)/(1+exp(shapvizwfCNLVO$data$to))
+shapvizwfCNLVO[["layers"]][[5]][["computed_geom_params"]][["label"]]=c("f(x)=0.169", "E[f(x)]=0.553")
+shapvizwfCNLVO[["layers"]][[5]][["data"]][["x"]]=exp(shapvizwfCNLVO[["layers"]][[5]][["data"]][["x"]])/(1+exp(shapvizwfCM[["layers"]][[5]][["data"]][["x"]]))
+   
+  shapvizwfCNLVO=plot(shapvizwfCNLVO)
+  shapvizwfCNLVO
+  
+ggsave(plot=shapvizwfCNLVO, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Discrepancy/Waterfalls", filename="CNLVO Individual Waterfall Plot.png", height=8, width=13)
+
+       #log odds
+  shapvizwfCNLVO[["data"]][["from"]]
+  #Probabilities
+  exp(shapvizwfCNLVO[["data"]][["S"]])/(1+exp(shapvizwfCNLVO[["data"]][["S"]]))
+  #cumulative logodds 
+  shapvizwfCNLVO[["data"]][["from"]]
+  #Cumulative probabilities 
+  exp(shapvizwfCNLVO[["data"]][["from"]])/(1+exp(shapvizwfCNLVO[["data"]][["from"]]))
+  
+ CNLVOWFDF=shapvizwfCNLVO$data
+ CNLVOWFDF$Abs_Prob_from=rd(exp(CNLVOWFDF$from)/(1+exCNLVOWFDFp(CNLVOWFDF$from)), 3)
+ CNLVOWFDF$Abs_Prob_to=rd(exp(CNLVOWFDF$to)/(1+exp(CNLVOWFDF$to)), 3)
+ CNLVOWFDF$SRounded=rd(CNLVOWFDF$S, 3)
+ CNLVOWFDF$SProb=rd(exp(CNLVOWFDF$S)/(1+exp(CNLVOWFDF$S)), 3)
+ CNLVOWFDFRound=transpose(list(round(CNLVOWFDF$S, 3)))
+ CNLVOWFDF$from=rd(CNLVOWFDF$from, 3)
+  CNLVOWFDF$Formula=sprintf("exp(%s)/(1+exp(%s))", rd(CNLVOWFDF$S, 3), rd(CNLVOWFDF$S, 3))
+
+  CMWFDFSorted=CNLVOWFDF%>%
+  select(label, SRounded, from)
+  
+  Baseodds=shapvizwfCNLVO[["data"]][["from"]][1]
+  Baseprob=exp(Baseodds)/(1+exp(Baseodds))
+  
+ Probodds=shapvizwfCNLVO[["data"]][["to"]][10]
+Probprob=exp(Probodds)/(1+exp(Probodds))
+
+
+```
+
+##### plot trees (whole model) ########
+```{r}
+
+#One tree representing whole model (hard to interpret)
+
+Collapsed_Trees=xgb.plot.multi.trees(model = LVO_fit, trees = 0:4, show_node_id = TRUE, render=FALSE, features_keep = 5)
+render_graph(Collapsed_Trees)
+
+setwd("S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Trees")
+export_graph(Collapsed_Trees, "Combined Trees.png")
+setwd("S:/StroBE and ABACUS data for Hannah")
+```
+
+#####Plot final trees - shows thresholds and can use to calc probabilities ###############
+```{r}
+#for binary features, split for yes/no is .5 
+
+#All trees (ensemble - whole model):
+All_Trees=xgb.plot.tree(model = LVO_fit, show_node_id = TRUE, render=FALSE)
+All_Trees$nodes_df$fillcolor=ifelse(All_Trees$nodes_df$shape=='rectangle', "#E4D8C6", "#B8EED2")
+render_graph(All_Trees)
+
+setwd("S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Trees")
+export_graph(All_Trees, file_name="All Trees.svg", file_type ="svg")
+setwd("S:/StroBE and ABACUS data for Hannah")
+
+#Tree 1/755
+Tree_1=xgb.plot.tree(model = LVO_fit, trees = 0, show_node_id = TRUE, render=FALSE)
+Tree_1$nodes_df$fillcolor=ifelse(Tree_1$nodes_df$shape=='rectangle', "#E4D8C6", "#B8EED2")
+render_graph(Tree_1)
+
+setwd("S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Trees")
+export_graph(Tree_1, "Tree One.png")
+setwd("S:/StroBE and ABACUS data for Hannah")
+
+
+#First 5 trees
+Five_trees=xgb.plot.tree(model = LVO_fit, trees = 0:4, show_node_id = TRUE, render=FALSE)
+Five_trees$nodes_df$fillcolor=ifelse(Five_trees$nodes_df$shape=='rectangle', "#E4D8C6", "#B8EED2")
+render_graph(Five_trees)
+
+setwd("S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Trees")
+export_graph(Five_trees, "5 Trees.png")
+setwd("S:/StroBE and ABACUS data for Hannah")
+
+
+#Tree 755/755
+Tree_755=xgb.plot.tree(model = LVO_fit, trees = 754, show_node_id = TRUE, render=FALSE)
+Tree_755$nodes_df$fillcolor=ifelse(Tree_755$nodes_df$shape=='rectangle', "#E4D8C6", "#B8EED2")
+render_graph(Tree_755)
+
+setwd("S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Trees")
+export_graph(Tree_755, "Tree_755.png")
+setwd("S:/StroBE and ABACUS data for Hannah")
+ 
+
+```
+
+######plot depth of model (number of leaves)#########
+```{r}
+
+LVO_Depth=xgb.plot.deepness(LVO_fit, which=c("max.depth"),pch=16, col=rgb(.5,0,.5,0.8), cex=1)
+LVO_Depth
+
+LVO_Depthdf=data.frame(LVO_Depth)
+
+LVO_Depth=ggplot(LVO_Depthdf, aes(x=Tree, y=Depth, color=Tree))+
+  geom_point()+
+  scale_color_gradient(low="blue", high="red")+
+    theme_classic()+
+  labs(title = "Maximum Leaf Depth for Each Tree in the Model", x="Tree Number")+
+  theme(plot.title = element_text(size=10, face="bold", hjust=.5))
+
+median(LVO_Depthdf$Depth)
+IQR(LVO_Depthdf$Depth)
+min(LVO_Depthdf$Depth)
+max(LVO_Depthdf$Depth)
+
+ggsave(plot=LVO_Depth, path="S:/StroBE and ABACUS data for Hannah/Plots/NIHSS Plots/Trees", filename="LVO Tree Depth.png", height=3, width=5)
+
+
+```
+
+#####Numeric Tree Info#########
+```{r}
+#nodes are split based on gain 
+Tree_text_D=xgb.dump(LVO_fit, with_stats = TRUE)
+Tree_text=as.data.frame(Tree_text_D)
+Tree_text
+```
+
+#####Numeric Feature thresholds and leaf values etc########
+```{r}
+
+Tree_Info=as.data.frame(xgb.model.dt.tree(feature_names = NULL, model=LVO_fit, use_int_id = FALSE))
+Tree_Info
+Tree_Info=as.data.frame(xgb.model.dt.tree(feature_names = NULL, model=LVO_fit, text=Tree_text_D, use_int_id = FALSE))
+
+#Example of all node splits for glucose 
+BM_splits=filter(Tree_Info, Feature=="Capillary_Blood_Glucose_mmol_L")%>%
+  select(Feature, Split)
+BM_splits=unique(BM_splits)
+BM_splits
+
+range(BM_splits$Split)
+
+#Example of all node splits for SBP
+SBP_splits=filter(Tree_Info, Feature=="Systolic_Blood_Pressure_mmHg")%>%
+  select(Feature, Split)
+SBP_splits=unique(SBP_splits)
+SBP_splits
+
+range(SBP_splits$Split)
+
+```
+
+##save final model#####
+```{r}
+
+xgb.save(LVO_fit, "XGB LVO FAST Model")
+setwd("S:\StroBE and ABACUS data for Hannah\Models")
+xgb.load("XGB LVO Model")
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
